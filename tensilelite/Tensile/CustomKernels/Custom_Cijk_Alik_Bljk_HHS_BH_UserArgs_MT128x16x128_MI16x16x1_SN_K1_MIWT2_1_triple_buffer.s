@@ -4,13 +4,13 @@
 /******************************************/
 .amdgcn_target "amdgcn-amd-amdhsa--gfx942"
 .text
-.protected Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer
-.globl Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer
+.protected Custom_Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer
+.globl Custom_Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer
 .p2align 8
-.type Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer,@function
+.type Custom_Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer,@function
 .section .rodata,#alloc
 .p2align 6
-.amdhsa_kernel Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer
+.amdhsa_kernel Custom_Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer
   .amdhsa_user_sgpr_kernarg_segment_ptr 1
   .amdhsa_accum_offset 256 // accvgpr offset
   .amdhsa_next_free_vgpr 264 // vgprs
@@ -45,12 +45,35 @@
 /* UseSgprForGRO=1 */
 .amdgpu_metadata
 ---
+custom.config:
+   ProblemType:
+      OperationType: GEMM
+      DataType: h
+      DestDataType: h
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: 1
+      TransposeB: 0
+      UseBeta: True
+      Batched: True
+   MatrixInstruction: [16, 16,16, 1,  1,   2,1,  4,1 ]
+   AssertFree0ElementMultiple: 16
+   PrefetchLocalRead: 2
+   DepthU: 128
+   GlobalReadVectorWidthA: 8
+   GlobalReadVectorWidthB: 8
+   1LDSBuffer: 1
+   NonTemporalA: 4
+   WorkGroupMapping: 1
+   InternalSupportParams: {SupportCustomWGM: True, SupportUserGSU: True, SupportCustomStaggerU: True}
+   NoReject: 1
+
 amdhsa.version:
   - 1
   - 1
 amdhsa.kernels:
-  - .name: Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer
-    .symbol: 'Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer.kd'
+  - .name: Custom_Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer
+    .symbol: 'Custom_Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer.kd'
     .language:                   OpenCL C
     .language_version:
       - 2
@@ -172,7 +195,7 @@ amdhsa.kernels:
     .wavefront_size:             64
 ...
 .end_amdgpu_metadata
-Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer:
+Custom_Cijk_Alik_Bljk_HHS_BH_UserArgs_MT128x16x128_MI16x16x1_SN_K1_MIWT2_1_triple_buffer:
 label_ASM_Start:  /// Main body of the asm kernel
 
 /* Magic div and mod functions */
