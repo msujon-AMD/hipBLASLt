@@ -58,6 +58,8 @@ custom.config:
       Batched: True
    MatrixInstruction: [16, 16,16, 1,  1,   2,1,  4,1 ]
    AssertFree0ElementMultiple: 16
+   AssertFree1ElementMultiple: 1
+   AssertSummationElementMultiple: 128
    PrefetchLocalRead: 2
    DepthU: 128
    GlobalReadVectorWidthA: 8
@@ -67,7 +69,6 @@ custom.config:
    WorkGroupMapping: 1
    InternalSupportParams: {SupportCustomWGM: True, SupportUserGSU: True, SupportCustomStaggerU: True}
    NoReject: 1
-
 amdhsa.version:
   - 1
   - 1
