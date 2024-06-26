@@ -1249,11 +1249,10 @@ s_cmp_eq_u32 s[sgprShadowLimitB+1], 0              // are we within 2^32?
 s_cselect_b32 s[sgprSrdB+2], s[sgprShadowLimitB+0], BufferLimit // Move shadow to real if we are within 2^32
 
 
+/* 2nd set of PGR */
 s_cmp_eq_u32 s[sgprLoopCounterL], 0x1              // PGR=3 but only 1 loop
 s_cbranch_scc1 label_skipPGR1_0                    // PGR=3 but only 1 loop
 
-/* 2nd set of PGR */
-/* Todo: check if we have k=128 or we have only on loop iteration.. jump to appropriate NLL */
 
 buffer_load_dwordx4 v[vgprG2LA1+0:vgprG2LA1+0+3], v[vgprGlobalReadOffsetA+0], s[sgprSrdA:sgprSrdA+3], 0 offen offset:0 nt // G -> Reg 0_0_0_0
 buffer_load_dwordx4 v[vgprG2LA1+4:vgprG2LA1+4+3], v[vgprGlobalReadOffsetA+0], s[sgprSrdA:sgprSrdA+3], s[sgprScalarGlobalReadOffsetA+0] offen offset:0 nt // G -> Reg 0_0_1_0
@@ -1375,7 +1374,20 @@ s_add_u32 s74, s74, s76                            // add target branch offset
 s_addc_u32 s75, s75, 0                             // add high and carry
 s_setpc_b64 s[74:75]                               // branch to label_PrefetchGlobalLastIterEnd
 label_NoBranch_LMI4T0VTC74OFN9W_0:
+
+
+/* 2nd set of PGR */
+s_cmp_eq_u32 s[sgprLoopCounterL], 0x1              // PGR=3 but only 1 loop
+s_cbranch_scc1 label_PGR1_vmcnt0                    // PGR=3 but only 1 loop
+
+s_waitcnt vmcnt(9)                                 // 8wait for global read
+s_branch label_1st_local_write
+
+label_PGR1_vmcnt0:
 s_waitcnt vmcnt(0)                                 // 8wait for global read
+
+label_1st_local_write:
+
 
 /* local write a */
 ds_write_b128 v[vgprLocalWriteAddrA], v[vgprG2LA+0:vgprG2LA+0+3] offset:0 // lwoA_0_0_0_0 = (0*LSCA)*(MT0I+PAD) + (0*LSPA) = 0
@@ -1393,8 +1405,8 @@ ds_write_b128 v[vgprLocalWriteAddrB], v[vgprG2LB+0:vgprG2LB+0+3] offset:0 // lwo
 /* local write swap a */
 
 /* local write swap b */
-s_cmp_le_u32 s[sgprLoopCounterL], 0x2              // PGR=3 but only 1 loop
-s_cbranch_scc1 label_skipPGR2_0                    // PGR=3 but only 1 loop
+s_cmp_le_u32 s[sgprLoopCounterL], 0x2              // PGR=3 but only 2 loop
+s_cbranch_scc1 label_skipPGR2_0                    // PGR=3 but only 2 loop
 
 buffer_load_dwordx4 v[vgprG2LA+0:vgprG2LA+0+3], v[vgprGlobalReadOffsetA+0], s[sgprSrdA:sgprSrdA+3], 0 offen offset:0 nt // G -> Reg 0_0_0_0
 buffer_load_dwordx4 v[vgprG2LA+4:vgprG2LA+4+3], v[vgprGlobalReadOffsetA+0], s[sgprSrdA:sgprSrdA+3], s[sgprScalarGlobalReadOffsetA+0] offen offset:0 nt // G -> Reg 0_0_1_0
@@ -1552,7 +1564,6 @@ s_cmp_eq_u32 s[sgprShadowLimitB+1], 0              // are we within 2^32?
 /* 1 LDS buffer: read-sync-write */
 s_waitcnt lgkmcnt(0)
 s_barrier
-s_waitcnt lgkmcnt(3)                               // wait for prior local read local write old=0, new=3 newLW=0 newLR=3
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X4_I0+0+0+0:vgprValuB_X4_I0+0+0+0+1], v[vgprValuA_X4_I0+0+0+0:vgprValuA_X4_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:9  */
 s_cselect_b32 s[sgprSrdB+2], s[sgprShadowLimitB+0], BufferLimit // Move shadow to real if we are within 2^32
@@ -1632,7 +1643,6 @@ v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X4_I0+0+2+0:vgprValuB_X4_I0+0+2+0+
 s_waitcnt lgkmcnt(0)                               // 3wait for local write
 // Skip force waitcnt0
 s_barrier
-s_waitcnt lgkmcnt(9)                               // wait for prior local read local write old=0, new=9 newLW=9 newLR=0
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X6_I0+0+0+0:vgprValuB_X6_I0+0+0+0+1], v[vgprValuA_X6_I0+0+0+0:vgprValuA_X6_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:13  */
 ds_read_b128 v[vgprValuA_X0_I0+0:vgprValuA_X0_I0+0+3], v[vgprLocalReadAddrA] offset:0 // L -> Reg lro=0 swapByteOffset=0 ti=128 vIdx=0 eIdx=0 rIdx=0 oIdx=0 buffer=0 iui=0
@@ -1761,7 +1771,6 @@ s_cmp_eq_u32 s[sgprShadowLimitB+1], 0              // are we within 2^32?
 /* 1 LDS buffer: read-sync-write */
 s_waitcnt lgkmcnt(0)
 s_barrier
-s_waitcnt lgkmcnt(3)                               // wait for prior local read local write old=0, new=3 newLW=0 newLR=3
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X4_I0+0+0+0:vgprValuB_X4_I0+0+0+0+1], v[vgprValuA_X4_I0+0+0+0:vgprValuA_X4_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:9  */
 s_cselect_b32 s[sgprSrdB+2], s[sgprShadowLimitB+0], BufferLimit // Move shadow to real if we are within 2^32
@@ -1841,7 +1850,6 @@ v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X4_I0+0+2+0:vgprValuB_X4_I0+0+2+0+
 s_waitcnt lgkmcnt(0)                               // 3wait for local write
 // Skip force waitcnt0
 s_barrier
-s_waitcnt lgkmcnt(9)                               // wait for prior local read local write old=0, new=9 newLW=9 newLR=0
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X6_I0+0+0+0:vgprValuB_X6_I0+0+0+0+1], v[vgprValuA_X6_I0+0+0+0:vgprValuA_X6_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:13  */
 ds_read_b128 v[vgprValuA_X0_I0+0:vgprValuA_X0_I0+0+3], v[vgprLocalReadAddrA] offset:0 // L -> Reg lro=0 swapByteOffset=0 ti=128 vIdx=0 eIdx=0 rIdx=0 oIdx=0 buffer=0 iui=0
@@ -1974,7 +1982,6 @@ s_cmp_eq_u32 s[sgprShadowLimitB+1], 0              // are we within 2^32?
 /* 1 LDS buffer: read-sync-write */
 s_waitcnt lgkmcnt(0)
 s_barrier
-s_waitcnt lgkmcnt(3)                               // wait for prior local read local write old=0, new=3 newLW=0 newLR=3
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X4_I0+0+0+0:vgprValuB_X4_I0+0+0+0+1], v[vgprValuA_X4_I0+0+0+0:vgprValuA_X4_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:9  */
 s_cselect_b32 s[sgprSrdB+2], s[sgprShadowLimitB+0], BufferLimit // Move shadow to real if we are within 2^32
@@ -2045,7 +2052,6 @@ v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X4_I0+0+2+0:vgprValuB_X4_I0+0+2+0+
 s_waitcnt lgkmcnt(0)                               // 3wait for local write
 // Skip force waitcnt0
 s_barrier
-s_waitcnt lgkmcnt(9)                               // wait for prior local read local write old=0, new=9 newLW=9 newLR=0
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X6_I0+0+0+0:vgprValuB_X6_I0+0+0+0+1], v[vgprValuA_X6_I0+0+0+0:vgprValuA_X6_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:13  */
 ds_read_b128 v[vgprValuA_X0_I0+0:vgprValuA_X0_I0+0+3], v[vgprLocalReadAddrA] offset:0 // L -> Reg lro=0 swapByteOffset=0 ti=128 vIdx=0 eIdx=0 rIdx=0 oIdx=0 buffer=0 iui=0
@@ -2165,7 +2171,6 @@ s_cmp_eq_u32 s[sgprShadowLimitB+1], 0              // are we within 2^32?
 /* 1 LDS buffer: read-sync-write */
 s_waitcnt lgkmcnt(0)
 s_barrier
-s_waitcnt lgkmcnt(3)                               // wait for prior local read local write old=0, new=3 newLW=0 newLR=3
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X4_I0+0+0+0:vgprValuB_X4_I0+0+0+0+1], v[vgprValuA_X4_I0+0+0+0:vgprValuA_X4_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:9  */
 s_cselect_b32 s[sgprSrdB+2], s[sgprShadowLimitB+0], BufferLimit // Move shadow to real if we are within 2^32
@@ -2236,7 +2241,6 @@ v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X4_I0+0+2+0:vgprValuB_X4_I0+0+2+0+
 s_waitcnt lgkmcnt(0)                               // 3wait for local write
 // Skip force waitcnt0
 s_barrier
-s_waitcnt lgkmcnt(9)                               // wait for prior local read local write old=0, new=9 newLW=9 newLR=0
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X6_I0+0+0+0:vgprValuB_X6_I0+0+0+0+1], v[vgprValuA_X6_I0+0+0+0:vgprValuA_X6_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:13  */
 ds_read_b128 v[vgprValuA_X0_I0+0:vgprValuA_X0_I0+0+3], v[vgprLocalReadAddrA] offset:0 // L -> Reg lro=0 swapByteOffset=0 ti=128 vIdx=0 eIdx=0 rIdx=0 oIdx=0 buffer=0 iui=0
@@ -2264,7 +2268,7 @@ v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X6_I0+0+2+0:vgprValuB_X6_I0+0+2+0+
 
 
 /* Last NLL is common for both odd and even exit */
-/* TODO: need any thing for GSU???*/
+
 s_branch label_last_NLL
 
 
@@ -2368,7 +2372,6 @@ s_cmp_eq_u32 s[sgprShadowLimitB+1], 0              // are we within 2^32?
 /* 1 LDS buffer: read-sync-write */
 s_waitcnt lgkmcnt(0)
 s_barrier
-s_waitcnt lgkmcnt(3)                               // wait for prior local read local write old=0, new=3 newLW=0 newLR=3
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X4_I0+0+0+0:vgprValuB_X4_I0+0+0+0+1], v[vgprValuA_X4_I0+0+0+0:vgprValuA_X4_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:9  */
 s_cselect_b32 s[sgprSrdB+2], s[sgprShadowLimitB+0], BufferLimit // Move shadow to real if we are within 2^32
@@ -2439,7 +2442,6 @@ v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X4_I0+0+2+0:vgprValuB_X4_I0+0+2+0+
 s_waitcnt lgkmcnt(0)                               // 3wait for local write
 // Skip force waitcnt0
 s_barrier
-s_waitcnt lgkmcnt(9)                               // wait for prior local read local write old=0, new=9 newLW=9 newLR=0
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X6_I0+0+0+0:vgprValuB_X6_I0+0+0+0+1], v[vgprValuA_X6_I0+0+0+0:vgprValuA_X6_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:13  */
 ds_read_b128 v[vgprValuA_X0_I0+0:vgprValuA_X0_I0+0+3], v[vgprLocalReadAddrA] offset:0 // L -> Reg lro=0 swapByteOffset=0 ti=128 vIdx=0 eIdx=0 rIdx=0 oIdx=0 buffer=0 iui=0
@@ -2560,7 +2562,6 @@ s_cmp_eq_u32 s[sgprShadowLimitB+1], 0              // are we within 2^32?
 /* 1 LDS buffer: read-sync-write */
 s_waitcnt lgkmcnt(0)
 s_barrier
-s_waitcnt lgkmcnt(3)                               // wait for prior local read local write old=0, new=3 newLW=0 newLR=3
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X4_I0+0+0+0:vgprValuB_X4_I0+0+0+0+1], v[vgprValuA_X4_I0+0+0+0:vgprValuA_X4_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:9  */
 s_cselect_b32 s[sgprSrdB+2], s[sgprShadowLimitB+0], BufferLimit // Move shadow to real if we are within 2^32
@@ -2631,7 +2632,6 @@ v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X4_I0+0+2+0:vgprValuB_X4_I0+0+2+0+
 s_waitcnt lgkmcnt(0)                               // 3wait for local write
 // Skip force waitcnt0
 s_barrier
-s_waitcnt lgkmcnt(9)                               // wait for prior local read local write old=0, new=9 newLW=9 newLR=0
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X6_I0+0+0+0:vgprValuB_X6_I0+0+0+0+1], v[vgprValuA_X6_I0+0+0+0:vgprValuA_X6_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:13  */
 ds_read_b128 v[vgprValuA_X0_I0+0:vgprValuA_X0_I0+0+3], v[vgprLocalReadAddrA] offset:0 // L -> Reg lro=0 swapByteOffset=0 ti=128 vIdx=0 eIdx=0 rIdx=0 oIdx=0 buffer=0 iui=0
@@ -2754,7 +2754,6 @@ v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X2_I0+0+2+0:vgprValuB_X2_I0+0+2+0+
 /* 1 LDS buffer: read-sync-write */
 s_waitcnt lgkmcnt(0)
 s_barrier
-s_waitcnt lgkmcnt(3)                               // wait for prior local read local write old=0, new=3 newLW=0 newLR=3
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X4_I0+0+0+0:vgprValuB_X4_I0+0+0+0+1], v[vgprValuA_X4_I0+0+0+0:vgprValuA_X4_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:9  */
 v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X4_I0+0+0+0:vgprValuB_X4_I0+0+0+0+1], v[vgprValuA_X4_I0+4+0+0:vgprValuA_X4_I0+4+0+0+1], acc[4:7] // left value = acc[4+0:7+0]
@@ -2956,7 +2955,6 @@ v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X2_I0+0+2+0:vgprValuB_X2_I0+0+2+0+
 /* 1 LDS buffer: read-sync-write */
 s_waitcnt lgkmcnt(0)
 s_barrier
-s_waitcnt lgkmcnt(3)                               // wait for prior local read local write old=0, new=3 newLW=0 newLR=3
 v_mfma_f32_16x16x16_f16 acc[0:3], v[vgprValuB_X4_I0+0+0+0:vgprValuB_X4_I0+0+0+0+1], v[vgprValuA_X4_I0+0+0+0:vgprValuA_X4_I0+0+0+0+1], acc[0:3] // left value = acc[0+0:3+0]
 /*  mfmaIndex:9  */
 v_mfma_f32_16x16x16_f16 acc[4:7], v[vgprValuB_X4_I0+0+0+0:vgprValuB_X4_I0+0+0+0+1], v[vgprValuA_X4_I0+4+0+0:vgprValuA_X4_I0+4+0+0+1], acc[4:7] // left value = acc[4+0:7+0]
