@@ -2730,7 +2730,7 @@ class Solution(collections.abc.Mapping):
         if (state["ProblemType"]["DataType"].isHalf() == False):
             reject(state, "ConvertAfterDS only support DataType half")
             return
-        if (state["ProblemType"]["DataTypeA"].isFloat8() == False) and (state["ProblemType"]["DataTypeB"].isFloat8() == False):
+        if (state["ProblemType"]["DataTypeA"].isAnyFloat8() == False) and (state["ProblemType"]["DataTypeB"].isAnyFloat8() == False):
             reject(state, "one of DataTypeA or DataTypeB need to be float8")
             return
 
@@ -2870,7 +2870,7 @@ class Solution(collections.abc.Mapping):
 
     # GlobalSplitU doesn't work with some other things:
     if state["GlobalSplitU"] > 1:
-      if state["ProblemType"]["DestDataType"].isFloat8() or state["ProblemType"]["DestDataType"].isBFloat8():
+      if state["ProblemType"]["DestDataType"].isAnyFloat8() or state["ProblemType"]["DestDataType"].isAnyBFloat8():
         reject(state, "GlobalSplitU currently does not support GSU > 1 for f8 and b8.")
         return
       # added GSU support for DGEMM
