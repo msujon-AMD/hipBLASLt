@@ -195,7 +195,7 @@ def which(p):
                 return candidate
     return None
 
-def splitArchs():
+def splitArchs(fromTensile=False):
   # Helper for architecture
   def isSupported(arch):
     return globalParameters["AsmCaps"][arch]["SupportedISA"] and \
@@ -227,9 +227,16 @@ def splitArchs():
     for arch in wantedArchs:
       archs += [re.sub(":", "-", arch)]
       cmdlineArchs += [arch]
+
+  # if calling from the context of Tensile we only want the arch associated with the current ISA
+  if fromTensile:
+    gfx = getGfxName(globalParameters["CurrentISA"])
+    archs = set(a for a in archs if gfx in a)
+    cmdlineArchs = set(a for a in cmdlineArchs if gfx in a)
+
   return archs, cmdlineArchs
 
-def buildSourceCodeObjectFile(CxxCompiler, outputPath, kernelFile):
+def buildSourceCodeObjectFile(CxxCompiler, outputPath, fromTensile, kernelFile):
     buildPath = ensurePath(os.path.join(globalParameters['WorkingPath'], 'code_object_tmp'))
     destDir = ensurePath(os.path.join(outputPath, 'library'))
     (_, filename) = os.path.split(kernelFile)
@@ -244,7 +251,7 @@ def buildSourceCodeObjectFile(CxxCompiler, outputPath, kernelFile):
     coFilenames = []
 
     if supportedCompiler(CxxCompiler):
-      archs, cmdlineArchs = splitArchs()
+      archs, cmdlineArchs = splitArchs(fromTensile)
 
       archFlags = ['--offload-arch=' + arch for arch in cmdlineArchs]
 
@@ -354,8 +361,8 @@ def buildSourceCodeObjectFile(CxxCompiler, outputPath, kernelFile):
 
     return destCosList
 
-def buildSourceCodeObjectFiles(CxxCompiler, kernelFiles, outputPath):
-    args    = zip(itertools.repeat(CxxCompiler), itertools.repeat(outputPath), kernelFiles)
+def buildSourceCodeObjectFiles(CxxCompiler, kernelFiles, outputPath, fromTensile=False):
+    args    = zip(itertools.repeat(CxxCompiler), itertools.repeat(outputPath),itertools.repeat(fromTensile), kernelFiles)
     coFiles = Common.ParallelMap2(buildSourceCodeObjectFile, args, "Compiling source kernels")
 
     return itertools.chain.from_iterable(coFiles)
@@ -502,7 +509,7 @@ def buildKernelSourceAndHeaderFiles(results, outputPath, kernelsWithBuildErrs):
 ################################################################################
 @timing
 def writeSolutionsAndKernels(outputPath, CxxCompiler, problemTypes, solutions, kernels, kernelHelperObjs, \
-    kernelWriterAssembly, errorTolerant=False):
+    kernelWriterAssembly, errorTolerant=False, fromTensile=False):
 
   codeObjectFiles = []
 
@@ -643,7 +650,7 @@ def writeSolutionsAndKernels(outputPath, CxxCompiler, problemTypes, solutions, k
       kernelHeaderFile.close()
 
   if not globalParameters["GenerateSourcesAndExit"]:
-    codeObjectFiles += buildSourceCodeObjectFiles(CxxCompiler, kernelFiles, outputPath)
+    codeObjectFiles += buildSourceCodeObjectFiles(CxxCompiler, kernelFiles, outputPath, fromTensile)
     codeObjectFiles += getAssemblyCodeObjectFiles(kernelsToBuild, kernelWriterAssembly, outputPath)
 
   Common.popWorkingPath() # build_tmp
