@@ -21,8 +21,8 @@ BenchmarkProblems:
   -
     - # ProblemType
       OperationType: GEMM
-      DataType: B8
-      DestDataType: B8
+      DataType: F8N
+      DestDataType: F8N
       ComputeDataType: s
       HighPrecisionAccumulate:  True
       TransposeA: False
@@ -96,6 +96,7 @@ BenchmarkProblems:
           - Exact: [384, 384, 1, 136] # classic format
           - Exact: [384, 384, 1, 256] # classic format
         - BiasTypeArgs: ['s']
+        - FactorDimArgs: [0, 1]
         - ActivationArgs:
           - [Enum: none]
 
@@ -105,8 +106,8 @@ BenchmarkProblems:
   -
     - # ProblemType
       OperationType: GEMM
-      DataType: B8
-      DestDataType: B8
+      DataType: F8N
+      DestDataType: F8N
       ComputeDataType: s
       HighPrecisionAccumulate:  True
       TransposeA: True
@@ -180,6 +181,7 @@ BenchmarkProblems:
           - Exact: [384, 384, 1, 136] # classic format
           - Exact: [384, 384, 1, 256] # classic format
         - BiasTypeArgs: ['s']
+        - FactorDimArgs: [0, 1]
         - ActivationArgs:
           - [Enum: none]
           - [Enum: tanh]
@@ -190,8 +192,8 @@ BenchmarkProblems:
   -
     - # ProblemType
       OperationType: GEMM
-      DataType: B8
-      DestDataType: B8
+      DataType: F8N
+      DestDataType: F8N
       ComputeDataType: s
       HighPrecisionAccumulate:  True
       TransposeA: False
@@ -265,6 +267,7 @@ BenchmarkProblems:
           - Exact: [384, 384, 1, 136] # classic format
           - Exact: [384, 384, 1, 256] # classic format
         - BiasTypeArgs: ['s']
+        - FactorDimArgs: [0, 1]
         - ActivationArgs:
           - [Enum: none]
           - [Enum: tanh]
@@ -275,8 +278,8 @@ BenchmarkProblems:
   -
     - # ProblemType
       OperationType: GEMM
-      DataType: B8
-      DestDataType: B8
+      DataType: F8N
+      DestDataType: F8N
       ComputeDataType: s
       HighPrecisionAccumulate:  True
       TransposeA: True
@@ -350,6 +353,7 @@ BenchmarkProblems:
           - Exact: [384, 384, 1, 136] # classic format
           - Exact: [384, 384, 1, 256] # classic format
         - BiasTypeArgs: ['s']
+        - FactorDimArgs: [0, 1]
         - ActivationArgs:
           - [Enum: none]
           - [Enum: tanh]

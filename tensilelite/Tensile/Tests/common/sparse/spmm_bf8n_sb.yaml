@@ -21,8 +21,8 @@ BenchmarkProblems:
   -
     - # ProblemType
       OperationType: GEMM
-      DataType: F8B8
-      DestDataType: F8
+      DataType: B8N
+      DestDataType: B8N
       ComputeDataType: s
       HighPrecisionAccumulate:  True
       TransposeA: False
@@ -105,8 +105,8 @@ BenchmarkProblems:
   -
     - # ProblemType
       OperationType: GEMM
-      DataType: F8B8
-      DestDataType: F8
+      DataType: B8N
+      DestDataType: B8N
       ComputeDataType: s
       HighPrecisionAccumulate:  True
       TransposeA: True
@@ -190,8 +190,8 @@ BenchmarkProblems:
   -
     - # ProblemType
       OperationType: GEMM
-      DataType: F8B8
-      DestDataType: F8
+      DataType: B8N
+      DestDataType: B8N
       ComputeDataType: s
       HighPrecisionAccumulate:  True
       TransposeA: False
@@ -275,8 +275,8 @@ BenchmarkProblems:
   -
     - # ProblemType
       OperationType: GEMM
-      DataType: F8B8
-      DestDataType: F8
+      DataType: B8N
+      DestDataType: B8N
       ComputeDataType: s
       HighPrecisionAccumulate:  True
       TransposeA: True

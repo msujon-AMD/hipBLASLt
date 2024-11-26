@@ -6,7 +6,7 @@ GlobalParameters:
   MergeFiles: False
   SleepPercent: 50
   NumElementsToValidate: -1
-  DataInitTypeBias: 0
+  DataInitTypeBias: 3 # rand
   DataInitTypeBeta: 1
   DataInitTypeAlpha: 1
   DataInitTypeScaleA: 2
@@ -19,24 +19,25 @@ GlobalParameters:
 
 BenchmarkProblems:
   ########################################
-  # TN - standard
+  # TN - FP8BS with ScaleAB
   ########################################
   -
     - # ProblemType
       OperationType: GEMM
-      DataType: F8B8
-      DestDataType: S
+      DataType: F8N
+      DestDataType: B
       ComputeDataType: S
       HighPrecisionAccumulate: True
       TransposeA: 1
       TransposeB: 0
       UseBeta: True
       Batched: True
-      UseBias: 1
-      BiasDataTypeList: [s,b]
+      Activation: True
+      ActivationType: all
       UseScaleAB: "Scalar"
-      Activation:    True
-      ActivationType: hipblaslt_all
+      UseScaleAlphaVec: 1
+      UseBias: 1
+      BiasDataTypeList: ['b']
     - # BenchmarkProblemSizeGroup - Standard
       InitialSolutionParameters:
       BenchmarkCommonParameters:
@@ -44,27 +45,18 @@ BenchmarkProblems:
       ForkParameters:
         - MatrixInstruction:
           - [16,16,32, 1, 1, 1,1, 1,1]  # 16x16
-          - [16,16,32, 1, 1, 1,1, 2,2]  # 32x32
-          - [16,16,32, 1, 1, 2,2, 1,1]  # 32x32
-          - [16,16,32, 1, 1, 2,2, 2,2]  # 64x64
-          - [32,32, 16, 1, 1, 1,1, 1,1]  # 32x32
-          - [32,32, 16, 1, 1, 1,1, 2,2]  # 64x64
-          - [32,32, 16, 1, 1, 2,2, 1,1]  # 64x64
-          - [32,32, 16, 1, 1, 2,2, 2,2]  # 128x128
-        - DepthU: [ 32, 64 ]
-        - AssertFree0ElementMultiple: [1, 8]
+        - DepthU: [ 64 ]
+        - AssertFree0ElementMultiple: [1]
         - PrefetchGlobalRead: [2]
         - PrefetchLocalRead: [1]
         - ClusterLocalRead: [1]
         - VectorWidthA: [1]
         - VectorWidthB: [1]
-        - GlobalReadVectorWidthA: [-1]
-        - GlobalReadVectorWidthB: [-1]
-        - LocalReadVectorWidth: [8]
+        - GlobalReadVectorWidthA: [4]
+        - GlobalReadVectorWidthB: [4]
         - ScheduleIterAlg: [3]
         - InnerUnroll: [1]
         - ExpandPointerSwap: [1]
-        - TransposeLDS: [1]
         - LdsBlockSizePerPadA: [0]
         - LdsBlockSizePerPadB: [0]
         - LdsPadA: [0]
@@ -77,38 +69,38 @@ BenchmarkProblems:
         - LocalWritePerMfma: [-1]
         - StoreVectorWidth: [-1]
         - SourceSwap: [1]
-        - NumElementsPerBatchStore: [0,2]
-        - StorePriorityOpt: [0,1]
+        - NumElementsPerBatchStore: [0]
+        - StorePriorityOpt: [0]
       BenchmarkJoinParameters:
       BenchmarkFinalParameters:
         - ProblemSizes:
-          - Exact: [4608, 1335, 1, 640]
-          - Exact: [4608, 1408, 1, 640]
+          - Exact: [127,   128, 1, 640]
           - Exact: [128,   128, 1, 640]
-        - BiasTypeArgs: ['s', 'b']
+          - Exact: [129,   128, 1, 640]
+        - BiasTypeArgs: ['b']
         - ActivationArgs:
           - [Enum: none]
-          - [Enum: Relu]
-          - [Enum: Gelu]
 
   ########################################
-  # NT - standard
+  # TN - FP8BF8N,B,S with ScaleAB
   ########################################
   -
     - # ProblemType
       OperationType: GEMM
-      DataType: F8B8
-      DestDataType: S
+      DataType: F8B8N
+      DestDataType: B
       ComputeDataType: S
       HighPrecisionAccumulate: True
-      TransposeA: 0
-      TransposeB: 1
+      TransposeA: 1
+      TransposeB: 0
       UseBeta: True
       Batched: True
-      UseBias: 1
-      BiasDataTypeList: [s,b]
+      Activation: True
+      ActivationType: all
       UseScaleAB: "Scalar"
-      Activation:    True
+      UseScaleAlphaVec: 1
+      UseBias: 1
+      BiasDataTypeList: ['b']
     - # BenchmarkProblemSizeGroup - Standard
       InitialSolutionParameters:
       BenchmarkCommonParameters:
@@ -116,24 +108,18 @@ BenchmarkProblems:
       ForkParameters:
         - MatrixInstruction:
           - [16,16,32, 1, 1, 1,1, 1,1]  # 16x16
-          - [16,16,32, 1, 1, 1,1, 2,2]  # 32x32
-          - [16,16,32, 1, 1, 2,2, 1,1]  # 32x32
-          - [16,16,32, 1, 1, 2,2, 2,2]  # 64x64
-          - [32,32, 16, 1, 1, 1,1, 1,1]  # 32x32
-          - [32,32, 16, 1, 1, 1,1, 2,2]  # 64x64
-          - [32,32, 16, 1, 1, 2,2, 1,1]  # 64x64
-          - [32,32, 16, 1, 1, 2,2, 2,2]  # 128x128
-        - DepthU: [ 32, 64 ]
-        - AssertFree0ElementMultiple: [1, 8]
+        - DepthU: [ 64 ]
+        - AssertFree0ElementMultiple: [1]
         - PrefetchGlobalRead: [2]
         - PrefetchLocalRead: [1]
         - ClusterLocalRead: [1]
         - VectorWidthA: [1]
         - VectorWidthB: [1]
+        - GlobalReadVectorWidthA: [4]
+        - GlobalReadVectorWidthB: [4]
         - ScheduleIterAlg: [3]
         - InnerUnroll: [1]
         - ExpandPointerSwap: [1]
-        - TransposeLDS: [0]
         - LdsBlockSizePerPadA: [0]
         - LdsBlockSizePerPadB: [0]
         - LdsPadA: [0]
@@ -146,16 +132,14 @@ BenchmarkProblems:
         - LocalWritePerMfma: [-1]
         - StoreVectorWidth: [-1]
         - SourceSwap: [1]
-        - NumElementsPerBatchStore: [0,2]
-        - StorePriorityOpt: [0,1]
+        - NumElementsPerBatchStore: [0]
+        - StorePriorityOpt: [0]
       BenchmarkJoinParameters:
       BenchmarkFinalParameters:
         - ProblemSizes:
-          - Exact: [4608, 1335, 1, 640]
-          - Exact: [4608, 1408, 1, 640]
+          - Exact: [127,   128, 1, 640]
           - Exact: [128,   128, 1, 640]
-        - BiasTypeArgs: ['s', 'b']
+          - Exact: [129,   128, 1, 640]
+        - BiasTypeArgs: ['b']
         - ActivationArgs:
           - [Enum: none]
-          - [Enum: Relu]
-          - [Enum: Gelu]
