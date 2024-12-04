@@ -41,6 +41,7 @@ from .KernelWriterAssembly import KernelWriterAssembly
 from .SolutionLibrary import MasterSolutionLibrary
 from .SolutionStructs import Solution
 from .CustomYamlLoader import load_logic_gfx_arch
+from .Utilities.Profile import profile
 
 import argparse
 import collections
@@ -385,6 +386,8 @@ def prepAsm(kernelWriterAssembly):
     assemblerFile.write("# usage: asm-new.sh kernelName(no extension) [--wave32]\n")
 
     assemblerFile.write("f=$1\n")
+    assemblerFile.write("filename=${1##*/}\n")
+    assemblerFile.write("dirname=${1%/*}\n")
     assemblerFile.write("shift\n")
     assemblerFile.write('if [ ! -z "$1" ] && [ "$1" = "--wave32" ]; then\n')
     assemblerFile.write("    wave=32\n")
@@ -418,9 +421,9 @@ def prepAsm(kernelWriterAssembly):
     assemblerFile.write("    exit $ERR\n")
     assemblerFile.write("fi\n")
 
-    assemblerFile.write("cp $f.co ../../../library/${f}_$h.co\n")
-    assemblerFile.write("mkdir -p ../../../asm_backup && ")
-    assemblerFile.write("cp $f.s ../../../asm_backup/$f.s\n")
+    assemblerFile.write("cp $f.co ${dirname}/../../../library/${filename}_$h.co\n")
+    assemblerFile.write("mkdir -p ${dirname}/../../../asm_backup && ")
+    assemblerFile.write("cp $f.s ${dirname}/../../../asm_backup/${filename}.s\n")
 
   assemblerFile.close()
   os.chmod(assemblerFileName, 0o777)
@@ -1239,7 +1242,7 @@ def validateLibrary(masterLibraries: MasterSolutionLibrary,
 ################################################################################
 # Tensile Create Library
 ################################################################################
-@timing
+@profile
 def TensileCreateLibrary():
   print1("")
   print1(HR)
@@ -1275,6 +1278,8 @@ def TensileCreateLibrary():
   argParser.add_argument("--no-short-file-names",    dest="ShortNames",        action="store_false")
   argParser.add_argument("--library-print-debug",    dest="LibraryPrintDebug", action="store_true")
   argParser.add_argument("--no-library-print-debug", dest="LibraryPrintDebug", action="store_false")
+  argParser.add_argument("--experimental",           dest="Experimental",      action="store_true",
+                         help="Include logic files in directories named 'Experimental'.")
   argParser.add_argument("--no-enumerate",           action="store_true", help="Do not run rocm_agent_enumerator.")
   argParser.add_argument("--package-library",        dest="PackageLibrary",    action="store_true", default=False)
   argParser.add_argument("--embed-library",          dest="EmbedLibrary",
@@ -1374,10 +1379,10 @@ def TensileCreateLibrary():
 
   assignGlobalParameters(arguments)
 
-  print1("# CodeObjectVersion from TensileCreateLibrary: %s" % arguments["CodeObjectVersion"])
-  print1("# CxxCompiler       from TensileCreateLibrary: %s" % CxxCompiler)
-  print1("# Architecture      from TensileCreateLibrary: %s" % arguments["Architecture"])
-  print1("# LibraryFormat     from TensileCreateLibrary: %s" % libraryFormat)
+  print1("# CodeObjectVersion: %s" % arguments["CodeObjectVersion"])
+  print1("# CxxCompiler:       %s" % CxxCompiler)
+  print1("# Architecture:      %s" % arguments["Architecture"])
+  print1("# LibraryFormat:     %s" % libraryFormat)
 
   if not os.path.exists(logicPath):
     printExit("LogicPath %s doesn't exist" % logicPath)
@@ -1412,13 +1417,18 @@ def TensileCreateLibrary():
     return p.suffix == logicExtFormat and ("all" in archs or archMatch(load_logic_gfx_arch(p), archs))
 
   globPattern = os.path.join(logicPath, f"**/{args.LogicFilter}{logicExtFormat}")
-  print1(f"# LogicFilter: {globPattern}")
+  print1(f"# LogicFilter:       {globPattern}")
   logicFiles = (os.path.join(logicPath, file) for file in glob.iglob(globPattern, recursive=True))
   logicFiles = [file for file in logicFiles if validLogicFile(Path(file))]
 
-  print1(f"# LibraryLogicFiles({len(logicFiles)}):")
+  print1(f"# Experimental:      {args.Experimental}")
+  if not args.Experimental:
+    logicFiles = [file for file in logicFiles if "experimental" not in map(str.lower, Path(file).parts)]
+
+  print1(f"# LibraryLogicFiles: {len(logicFiles)}")
   for logicFile in logicFiles:
     print1("#   %s" % logicFile)
+
 
   ##############################################################################
   # Parse config files
@@ -1564,7 +1574,6 @@ def TensileCreateLibrary():
 
   print1("# Check if generated files exists.")
 
-  @timing
   def checkFileExistence(files):
     for filePath in files:
       if not os.path.exists(filePath):

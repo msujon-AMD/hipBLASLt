@@ -39,7 +39,6 @@
 #include "hipblaslt_vector.hpp"
 #include "near.hpp"
 #include "norm.hpp"
-#include "type_dispatch.hpp"
 #include "unit.hpp"
 #include "utility.hpp"
 #include <cstddef>
@@ -537,12 +536,6 @@ auto _dgelu = [](auto in, auto /*arg1*/, auto /*arg2*/) -> decltype(in) {
     return static_cast<decltype(in)>(0.5f * tanh(xx) + x1 * x2 + 0.5f);
 };
 
-template <typename TiA,
-          typename TiB,
-          typename To,
-          typename Tc,
-          typename TciA = TiA,
-          typename TciB = TiB>
 void testing_matmul_bad_arg(const Arguments& arg)
 {
     const int64_t M = 128;
@@ -559,10 +552,10 @@ void testing_matmul_bad_arg(const Arguments& arg)
     const hipblasOperation_t transB = HIPBLAS_OP_N;
 
     // allocate memory on device
-    device_vector<TiA> dA(safe_size / 2);
-    device_vector<TiB> dB(safe_size);
-    device_vector<To>  dC(safe_size);
-    device_vector<To>  dD(safe_size);
+    HipDeviceBuffer dA(arg.a_type, safe_size / 2, arg.HMM);
+    HipDeviceBuffer dB(arg.b_type, safe_size, arg.HMM);
+    HipDeviceBuffer dC(arg.c_type, safe_size, arg.HMM);
+    HipDeviceBuffer dD(arg.d_type, safe_size, arg.HMM);
     CHECK_DEVICE_ALLOCATION(dA.memcheck());
     CHECK_DEVICE_ALLOCATION(dB.memcheck());
     CHECK_DEVICE_ALLOCATION(dC.memcheck());
@@ -845,7 +838,7 @@ void check(hipStream_t                   stream,
     }
 }
 
-// A function to determing the default bias_type
+// A function to determine the default bias_type
 hipDataType derive_unset_bias_type(const Arguments& arg)
 {
     // TODO: confirm if HIP_R_64F, HIP_R_32I are neccessary for biastype
@@ -854,7 +847,7 @@ hipDataType derive_unset_bias_type(const Arguments& arg)
 
     hipDataType real_bias_type = arg.bias_type;
 
-    // when bias type is unset.
+    // when bias type is unset
     if(arg.bias_type == HIPBLASLT_DATATYPE_INVALID)
     {
         if(arg.compute_type == HIPBLAS_COMPUTE_32I)
@@ -900,6 +893,50 @@ hipDataType derive_unset_bias_type(const Arguments& arg)
     return real_bias_type;
 }
 
+// A function to determine the default compute_input_type
+std::tuple<hipDataType, hipDataType> derive_unset_compute_input_type(const Arguments& arg)
+{
+    static const std::set<hipDataType> supported_compute_input_types = {
+        HIP_R_32F,
+        HIP_R_16BF,
+        HIP_R_16F,
+#ifdef ROCM_USE_FLOAT8
+        HIP_R_8F_E4M3,
+        HIP_R_8F_E5M2,
+#endif
+        HIP_R_8F_E4M3_FNUZ,
+        HIP_R_8F_E5M2_FNUZ,
+    };
+
+    hipDataType real_compute_input_typeA = arg.compute_input_typeA;
+    hipDataType real_compute_input_typeB = arg.compute_input_typeB;
+
+    if(real_compute_input_typeA != HIPBLASLT_DATATYPE_INVALID
+       && !supported_compute_input_types.count(real_compute_input_typeA))
+        throw std::invalid_argument(
+            "Invalid compute_input_typeA "
+            + std::string(hip_datatype_to_string(real_compute_input_typeA)));
+
+    if(real_compute_input_typeA != HIPBLASLT_DATATYPE_INVALID
+       && !supported_compute_input_types.count(real_compute_input_typeB))
+        throw std::invalid_argument(
+            "Invalid compute_input_typeB "
+            + std::string(hip_datatype_to_string(real_compute_input_typeB)));
+
+    // when compute_input_type type is unset
+    if(real_compute_input_typeA == HIPBLASLT_DATATYPE_INVALID)
+    {
+        real_compute_input_typeA = computeTypeToRealDataType(arg.compute_type);
+    }
+
+    if(real_compute_input_typeB == HIPBLASLT_DATATYPE_INVALID)
+    {
+        real_compute_input_typeB = computeTypeToRealDataType(arg.compute_type);
+    }
+
+    return {real_compute_input_typeA, real_compute_input_typeB};
+}
+
 void testing_matmul_with_bias(const Arguments& arg,
                               hipDataType      TiA,
                               hipDataType      TiB,
@@ -909,20 +946,16 @@ void testing_matmul_with_bias(const Arguments& arg,
                               hipDataType      TciB,
                               hipDataType      Tbias);
 
-template <typename TiA,
-          typename TiB,
-          typename To,
-          typename Tc,
-          typename TciA = TiA,
-          typename TciB = TiB>
 void testing_matmul(const Arguments& arg)
 {
-    hipDataType tiA  = hipblaslt_type2datatype<TiA>();
-    hipDataType tiB  = hipblaslt_type2datatype<TiB>();
-    hipDataType to   = hipblaslt_type2datatype<To>();
-    hipDataType tc   = hipblaslt_type2datatype<Tc>();
-    hipDataType tciA = hipblaslt_type2datatype<TciA>();
-    hipDataType tciB = hipblaslt_type2datatype<TciB>();
+    hipDataType tiA = arg.a_type;
+    hipDataType tiB = arg.b_type;
+    hipDataType to  = arg.c_type;
+    hipDataType tc  = computeTypeToRealDataType(arg.compute_type);
+    hipDataType tciA, tciB;
+
+    // after this, tciA and tciB should not be invalid
+    std::tie(tciA, tciB) = derive_unset_compute_input_type(arg);
 
     // after this, real bias type should not be invalid
     hipDataType real_bias_type = derive_unset_bias_type(arg);
@@ -930,8 +963,7 @@ void testing_matmul(const Arguments& arg)
     arg_revised.bias_type      = real_bias_type;
 
     // for all f8/bf8 cases including mix mode
-    if((realDataTypeSize(tiA) == 1 || realDataTypeSize(tiB) == 1)
-       && !std::is_same<Tc, int32_t>::value) //Tc!=HIPBLAS_COMPUTE_32I
+    if((realDataTypeSize(tiA) == 1 || realDataTypeSize(tiB) == 1) && tc != HIP_R_32I)
     {
         if(to == HIP_R_16BF || to == HIP_R_32F)
         {
@@ -988,7 +1020,7 @@ void testing_matmul(const Arguments& arg)
         return testing_matmul_with_bias(arg_revised, tiA, tiB, to, tc, tciA, tciB, to);
     }
     // shouldn't arrive here
-    CHECK_SUCCESS(false);
+    hipblaslt_test_invalid{}(arg);
     return;
 }
 
@@ -1015,7 +1047,7 @@ void testing_matmul_with_bias(const Arguments& arg,
     hipblasOperation_t transA(char_to_hipblas_operation(arg.transA));
     hipblasOperation_t transB(char_to_hipblas_operation(arg.transB));
 
-    hipDataType Talpha = Tc;
+    hipDataType Talpha = (Tc == HIP_R_16F ? HIP_R_32F : Tc);
 
     bool    do_grouped_gemm = arg.grouped_gemm > 0;
     int32_t gemm_count      = std::max(1, arg.grouped_gemm);
@@ -1100,15 +1132,15 @@ void testing_matmul_with_bias(const Arguments& arg,
 
         size_D_copy[i] = (arg.unit_check || arg.norm_check || arg.allclose_check) ? size_D[i] : 0;
         size_scaleAlphaVec[i] = arg.scaleAlpha_vector ? M[i] : 0;
-        if(arg.scaleA == Arguments::ScalingFormat::Scalar)
+        if(arg.scaleA == hipblaslt_scaling_format::Scalar)
             size_scaleAVec[i] = 1;
-        else if(arg.scaleA == Arguments::ScalingFormat::Vector)
+        else if(arg.scaleA == hipblaslt_scaling_format::Vector)
             size_scaleAVec[i] = M[i];
         else
             size_scaleAVec[i] = 0;
-        if(arg.scaleB == Arguments::ScalingFormat::Scalar)
+        if(arg.scaleB == hipblaslt_scaling_format::Scalar)
             size_scaleBVec[i] = 1;
-        else if(arg.scaleB == Arguments::ScalingFormat::Vector)
+        else if(arg.scaleB == hipblaslt_scaling_format::Vector)
             size_scaleBVec[i] = N[i];
         else
             size_scaleBVec[i] = 0;
@@ -1332,11 +1364,13 @@ void testing_matmul_with_bias(const Arguments& arg,
             dE.emplace_back(To, size_E[i] * block_count, HMM);
         }
 
-        if(arg.scaleA)
+        if(arg.scaleA == hipblaslt_scaling_format::Scalar
+           || arg.scaleA == hipblaslt_scaling_format::Vector)
         {
             dScaleA.emplace_back(Talpha, size_scaleAVec[i] * block_count, HMM);
         }
-        if(arg.scaleB)
+        if(arg.scaleB == hipblaslt_scaling_format::Scalar
+           || arg.scaleB == hipblaslt_scaling_format::Vector)
         {
             dScaleB.emplace_back(Talpha, size_scaleBVec[i] * block_count, HMM);
         }
@@ -1377,9 +1411,11 @@ void testing_matmul_with_bias(const Arguments& arg,
         if(arg.scaleAlpha_vector)
             hScaleAlphaVec.emplace_back(Talpha, size_scaleAlphaVec[i]);
 
-        if(arg.scaleA)
+        if(arg.scaleA == hipblaslt_scaling_format::Scalar
+           || arg.scaleA == hipblaslt_scaling_format::Vector)
             hScaleA.emplace_back(Talpha, size_scaleAVec[i]);
-        if(arg.scaleB)
+        if(arg.scaleB == hipblaslt_scaling_format::Scalar
+           || arg.scaleB == hipblaslt_scaling_format::Vector)
             hScaleB.emplace_back(Talpha, size_scaleBVec[i]);
         if(arg.scaleC)
             hScaleC.emplace_back(Talpha, 1);
@@ -1457,10 +1493,12 @@ void testing_matmul_with_bias(const Arguments& arg,
             hipblaslt_init(hBias[i].buf(), size_bias[i], 1, size_bias[i], Tbias);
         }
 
-        if(arg.scaleA)
+        if(arg.scaleA == hipblaslt_scaling_format::Scalar
+           || arg.scaleA == hipblaslt_scaling_format::Vector)
             hipblaslt_init(hScaleA[i].buf(), size_scaleAVec[i], 1, size_scaleAVec[i], Talpha);
 
-        if(arg.scaleB)
+        if(arg.scaleB == hipblaslt_scaling_format::Scalar
+           || arg.scaleB == hipblaslt_scaling_format::Vector)
             hipblaslt_init(hScaleB[i].buf(), size_scaleBVec[i], 1, size_scaleBVec[i], Talpha);
 
         if(arg.scaleC)
@@ -1515,7 +1553,8 @@ void testing_matmul_with_bias(const Arguments& arg,
         else
             alpha_in[i] = &(h_alpha[i]);
 
-        if(arg.scaleA)
+        if(arg.scaleA == hipblaslt_scaling_format::Scalar
+           || arg.scaleA == hipblaslt_scaling_format::Vector)
         {
             if(arg.amaxScaleA && (arg.a_type == HIP_R_32F || arg.a_type == HIP_R_16F))
             {
@@ -1533,7 +1572,8 @@ void testing_matmul_with_bias(const Arguments& arg,
                 CHECK_HIP_ERROR(synchronize(dScaleA[i], hScaleA[i], block_count));
         }
 
-        if(arg.scaleB)
+        if(arg.scaleB == hipblaslt_scaling_format::Scalar
+           || arg.scaleB == hipblaslt_scaling_format::Vector)
         {
             if(arg.amaxScaleB && (arg.b_type == HIP_R_32F || arg.b_type == HIP_R_16F))
             {
@@ -1610,10 +1650,11 @@ void testing_matmul_with_bias(const Arguments& arg,
                 HIPBLAS_STATUS_SUCCESS);
         }
 
-        if(arg.scaleA)
+        if(arg.scaleA == hipblaslt_scaling_format::Scalar
+           || arg.scaleA == hipblaslt_scaling_format::Vector)
         {
             hipblasLtMatmulDescAttributes_t attr
-                = arg.scaleA == Arguments::ScalingFormat::Vector
+                = arg.scaleA == hipblaslt_scaling_format::Vector
                       ? HIPBLASLT_MATMUL_DESC_A_SCALE_POINTER_VEC_EXT
                       : HIPBLASLT_MATMUL_DESC_A_SCALE_POINTER;
             void* scaleA_addr = (void*)(dScaleA[i].buf());
@@ -1621,10 +1662,11 @@ void testing_matmul_with_bias(const Arguments& arg,
                 hipblasLtMatmulDescSetAttribute(matmul[0][i], attr, &scaleA_addr, sizeof(void*)));
         }
 
-        if(arg.scaleB)
+        if(arg.scaleB == hipblaslt_scaling_format::Scalar
+           || arg.scaleB == hipblaslt_scaling_format::Vector)
         {
             hipblasLtMatmulDescAttributes_t attr
-                = arg.scaleB == Arguments::ScalingFormat::Vector
+                = arg.scaleB == hipblaslt_scaling_format::Vector
                       ? HIPBLASLT_MATMUL_DESC_B_SCALE_POINTER_VEC_EXT
                       : HIPBLASLT_MATMUL_DESC_B_SCALE_POINTER;
             void* scaleB_addr = (void*)(dScaleB[i].buf());
@@ -1716,10 +1758,11 @@ void testing_matmul_with_bias(const Arguments& arg,
                                                     &e_addr,
                                                     sizeof(void*)));
             }
-            if(arg.scaleA)
+            if(arg.scaleA == hipblaslt_scaling_format::Scalar
+               || arg.scaleA == hipblaslt_scaling_format::Vector)
             {
                 hipblasLtMatmulDescAttributes_t attr
-                    = arg.scaleA == Arguments::ScalingFormat::Vector
+                    = arg.scaleA == hipblaslt_scaling_format::Vector
                           ? HIPBLASLT_MATMUL_DESC_A_SCALE_POINTER_VEC_EXT
                           : HIPBLASLT_MATMUL_DESC_A_SCALE_POINTER;
                 void* scaleA_addr = (void*)(dScaleA[i].as<char>() + b * size_scaleAVec[i]);
@@ -1727,10 +1770,11 @@ void testing_matmul_with_bias(const Arguments& arg,
                     matmul[b][i], attr, &scaleA_addr, sizeof(void*)));
             }
 
-            if(arg.scaleB)
+            if(arg.scaleB == hipblaslt_scaling_format::Scalar
+               || arg.scaleB == hipblaslt_scaling_format::Vector)
             {
                 hipblasLtMatmulDescAttributes_t attr
-                    = arg.scaleB == Arguments::ScalingFormat::Vector
+                    = arg.scaleB == hipblaslt_scaling_format::Vector
                           ? HIPBLASLT_MATMUL_DESC_B_SCALE_POINTER_VEC_EXT
                           : HIPBLASLT_MATMUL_DESC_B_SCALE_POINTER;
                 void* scaleB_addr = (void*)(dScaleB[i].as<char>() + b * size_scaleBVec[i]);
@@ -1826,9 +1870,9 @@ void testing_matmul_with_bias(const Arguments& arg,
                     extepilogue[gemmIdx].setAuxLeadingDimension(lde[gemmIdx]);
                     extepilogue[gemmIdx].setAuxBatchStride(stride_e[gemmIdx]);
                     extepilogue[gemmIdx].setScalingAType(
-                        arg.scaleA == Arguments::ScalingFormat::Vector ? 1 : 0);
+                        arg.scaleA == hipblaslt_scaling_format::Vector ? 1 : 0);
                     extepilogue[gemmIdx].setScalingBType(
-                        arg.scaleB == Arguments::ScalingFormat::Vector ? 1 : 0);
+                        arg.scaleB == hipblaslt_scaling_format::Vector ? 1 : 0);
                 }
                 extinputs[b][gemmIdx].setA((void*)((dA[gemmIdx].as<char>())
                                                    + b * size_A[gemmIdx] * realDataTypeSize(TiA)));
@@ -1841,12 +1885,16 @@ void testing_matmul_with_bias(const Arguments& arg,
                 extinputs[b][gemmIdx].setAlpha(&h_alpha[gemmIdx]);
                 extinputs[b][gemmIdx].setBeta(&h_beta[gemmIdx]);
                 extinputs[b][gemmIdx].setBias(bias_addr);
-                extinputs[b][gemmIdx].setScaleA(arg.scaleA ? (void*)((dScaleA[gemmIdx].as<char>())
-                                                                     + b * size_scaleAVec[gemmIdx])
-                                                           : nullptr);
-                extinputs[b][gemmIdx].setScaleB(arg.scaleB ? (void*)((dScaleB[gemmIdx].as<char>())
-                                                                     + b * size_scaleBVec[gemmIdx])
-                                                           : nullptr);
+                extinputs[b][gemmIdx].setScaleA(
+                    (arg.scaleA == hipblaslt_scaling_format::Scalar
+                     || arg.scaleA == hipblaslt_scaling_format::Vector)
+                        ? (void*)((dScaleA[gemmIdx].as<char>()) + b * size_scaleAVec[gemmIdx])
+                        : nullptr);
+                extinputs[b][gemmIdx].setScaleB(
+                    (arg.scaleB == hipblaslt_scaling_format::Scalar
+                     || arg.scaleB == hipblaslt_scaling_format::Vector)
+                        ? (void*)((dScaleB[gemmIdx].as<char>()) + b * size_scaleBVec[gemmIdx])
+                        : nullptr);
                 extinputs[b][gemmIdx].setScaleC(arg.scaleC ? dScaleC[gemmIdx].as<char>() : nullptr);
                 extinputs[b][gemmIdx].setScaleD(arg.scaleD ? dScaleD[gemmIdx].as<char>() : nullptr);
                 extinputs[b][gemmIdx].setScaleAux(arg.scaleE ? dScaleE[gemmIdx].as<char>()
@@ -2551,8 +2599,14 @@ void testing_matmul_with_bias(const Arguments& arg,
 
             computeTypeInterface scale;
             set_computeInterface(scale, 1, Talpha);
-            void* scaleAVec   = arg.scaleA ? hScaleA[gemmIdx].buf() : (void*)(&scale);
-            void* scaleBVec   = arg.scaleB ? hScaleB[gemmIdx].buf() : (void*)(&scale);
+            void* scaleAVec   = (arg.scaleA == hipblaslt_scaling_format::Scalar
+                               || arg.scaleA == hipblaslt_scaling_format::Vector)
+                                    ? hScaleA[gemmIdx].buf()
+                                    : (void*)(&scale);
+            void* scaleBVec   = (arg.scaleB == hipblaslt_scaling_format::Scalar
+                               || arg.scaleB == hipblaslt_scaling_format::Vector)
+                                    ? hScaleB[gemmIdx].buf()
+                                    : (void*)(&scale);
             void* scaleDValue = arg.scaleD ? hScaleD[gemmIdx].buf() : (void*)(&scale);
             void* scaleEValue = arg.scaleE ? hScaleE[gemmIdx].buf() : (void*)(&scale);
 
@@ -2581,8 +2635,8 @@ void testing_matmul_with_bias(const Arguments& arg,
                                scaleAVec,
                                scaleBVec,
                                (void*)(&scale),
-                               (arg.scaleA == Arguments::ScalingFormat::Vector),
-                               (arg.scaleB == Arguments::ScalingFormat::Vector),
+                               (arg.scaleA == hipblaslt_scaling_format::Vector),
+                               (arg.scaleB == hipblaslt_scaling_format::Vector),
                                TiA,
                                TiB,
                                Tc,
@@ -2738,8 +2792,8 @@ void testing_matmul_with_bias(const Arguments& arg,
                                scaleAVec,
                                scaleBVec,
                                scaleDValue,
-                               (arg.scaleA == Arguments::ScalingFormat::Vector),
-                               (arg.scaleB == Arguments::ScalingFormat::Vector),
+                               (arg.scaleA == hipblaslt_scaling_format::Vector),
+                               (arg.scaleB == hipblaslt_scaling_format::Vector),
                                TiA,
                                TiB,
                                To,
@@ -3283,9 +3337,22 @@ void testing_matmul_with_bias(const Arguments& arg,
         e_c_type, e_d_type, e_compute_type, e_scaleA, e_scaleB, e_scaleC, e_scaleD, e_amaxD,      \
         e_activation_type, e_bias_vector, e_bias_type, e_rotating
 
-            int32_t     solutionIndex = -1;
+            const char* tuningEnv     = getenv("HIPBLASLT_TUNING_FILE");
+            int32_t     solutionIndex = ((tuningEnv && heuristicResult.size() == 1)
+                                     || (arg.print_solution_found && arg.print_kernel_info))
+                                            ? hipblaslt_ext::getIndexFromAlgo(heuristicResult[sol].algo)
+                                            : -1;
             std::string solutionName  = "";
             std::string kernelName    = "";
+            std::string archName      = "";
+            std::string cuNum         = "";
+
+            if(tuningEnv && heuristicResult.size() == 1)
+            {
+                archName = deviceProps.gcnArchName;
+                cuNum    = std::to_string(deviceProps.multiProcessorCount);
+            }
+
             if(arg.print_solution_found)
             {
                 if(arg.print_kernel_info)
@@ -3310,7 +3377,6 @@ void testing_matmul_with_bias(const Arguments& arg,
                         kernelName = hipblaslt_ext::getKernelNameFromAlgo(
                             handle, heuristicResult[sol].algo);
                     }
-                    solutionIndex = hipblaslt_ext::getIndexFromAlgo(heuristicResult[sol].algo);
                 }
                 ArgumentModel<argument_param>{}.log_args(
                     Talpha,
@@ -3319,6 +3385,8 @@ void testing_matmul_with_bias(const Arguments& arg,
                     solutionIndex,
                     solutionName,
                     kernelName,
+                    archName,
+                    cuNum,
                     arg,
                     (uint32_t)tuningVec[heuristicTuningIndex[sol]].splitK,
                     (uint32_t)tuningVec[heuristicTuningIndex[sol]].wgm,
@@ -3346,14 +3414,25 @@ void testing_matmul_with_bias(const Arguments& arg,
 
         if(heuristicResult.size() > 1)
         {
-            int32_t     solutionIndex = -1;
-            std::string solutionName  = "";
-            std::string kernelName    = "";
+            const char* tuningEnv = getenv("HIPBLASLT_TUNING_FILE");
+            int32_t     solutionIndex
+                = (tuningEnv || arg.print_kernel_info)
+                      ? hipblaslt_ext::getIndexFromAlgo(heuristicResult[best_sol].algo)
+                      : -1;
+            std::string solutionName = "";
+            std::string kernelName   = "";
+            std::string archName     = "";
+            std::string cuNum        = "";
+            if(tuningEnv)
+            {
+                archName = deviceProps.gcnArchName;
+                cuNum    = std::to_string(deviceProps.multiProcessorCount);
+            }
+
             if(arg.print_kernel_info)
             {
-                solutionIndex = hipblaslt_ext::getIndexFromAlgo(heuristicResult[best_sol].algo);
-                solutionName  = best_s_name;
-                kernelName    = best_k_name;
+                solutionName = best_s_name;
+                kernelName   = best_k_name;
             }
 
             hipblaslt_cout << "Winner: " << std::endl;
@@ -3364,6 +3443,8 @@ void testing_matmul_with_bias(const Arguments& arg,
                 solutionIndex,
                 solutionName,
                 kernelName,
+                archName,
+                cuNum,
                 arg,
                 (uint32_t)tuningVec[heuristicTuningIndex[best_sol]].splitK,
                 (uint32_t)tuningVec[heuristicTuningIndex[best_sol]].wgm,

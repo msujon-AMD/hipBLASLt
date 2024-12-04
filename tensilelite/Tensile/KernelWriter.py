@@ -52,14 +52,12 @@ from typing import Dict, NamedTuple, Tuple, Type
 from math import ceil
 
 # Make const values immutable
-class ConstValues(NamedTuple):
+@dataclass(frozen=True)
+class ConstValues():
   initLdsValue:int  = 0xFFFFFFFF  # Value to use for LDS Init, if enabled
   initSgprValue:int = 0x0  # Value to use for Sgpr Init, if enabled
   initVgprValue:int = 0xFFFFFFFF  # Value to use for Vgpr Init, if enabled
 
-  maxVgprs: int     = 256
-  # max allowed is 112 out of 112 , 6 is used by hardware 4 SGPRs are wasted
-  maxSgprs: int     = 102
   maxOccupancy: int = 10
 
   ldsOOB: int       = 0xF00000
@@ -98,6 +96,7 @@ class StateValues:
   language: str  = "ASM"
   asmCaps: dict  = field(init=False)
   archCaps: dict = field(init=False)
+  regCaps: dict  = field(init=False)
   laneSGPRCount: int = field(init=False)
 
   # These values may differ between platforms, so put them here.
@@ -995,9 +994,16 @@ class KernelWriter(metaclass=abc.ABCMeta):
 
       oneBufferScheduling = kernel["1LDSBuffer"] or kernel["DirectToLdsA"] or kernel["DirectToLdsB"]
       
-      def hasDependency(lr: DSLoadInstruction, inst: MFMAInstruction | Instruction) -> bool:
+      def hasDependency(lr: DSLoadInstruction, inst: Instruction) -> bool:
         lrDataReg = lr.dst
-        srcRegs = [inst.a, inst.b,] if isinstance(inst, MFMAInstruction) else inst.srcs
+
+        if isinstance(inst, MFMAInstruction):
+          srcRegs = [inst.a, inst.b,]
+        elif isinstance(inst, SMFMAInstruction):
+          srcRegs = [inst.a, inst.b, inst.metadata]
+        else:
+          srcRegs = inst.srcs
+
         return any((lrDataReg & r) for r in srcRegs if isinstance(r, RegisterContainer))
 
       def hasAnyDependency(lr: DSLoadInstruction, insts: List[Instruction]):
@@ -1042,7 +1048,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
             readLeft = checkLocalReadFIFOFull(mfmaIndex, self.localReadThisLoopFIFO, localReadItemsThisLoop, readLeftLROPT, readLeftLREven)
           elif kernel["EnableMatrixInstruction"] and self.do["OptimizeNumItersPLR0"]:
             # if numItersPLR == 0, try to schedule local reads with instruction level prefetch.
-            mfmas = [mfma for mfma in macIterCode.flatitems() if isinstance(mfma, MFMAInstruction)]
+            mfmas = [mfma for mfma in macIterCode.flatitems() if isinstance(mfma, (MFMAInstruction, SMFMAInstruction,))]
             if i + 1 != numMfmaPerIter:
               numLocalReadShouldSchedule = 0
               # prefetch load for next wave tile along M since we re-use B first.
@@ -1232,7 +1238,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
         ####
         if self.states.numItersPLR == 0 and kernel["EnableMatrixInstruction"] and self.do["OptimizeNumItersPLR0"]:
           lgkmcnt = -1
-          mfmas = [mfma for mfma in macIterCode.flatitems() if isinstance(mfma, MFMAInstruction)]
+          mfmas = [mfma for mfma in macIterCode.flatitems() if isinstance(mfma, (MFMAInstruction, SMFMAInstruction,))]
           ## To support do["MAC"] is False
           mfma = [mfmas[i],] if len(mfmas) > 0 else []
           instsToCheck = mfma + packItems
@@ -2360,7 +2366,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
     # Open persistent loop
     loopComponent = Component.PersistentLoop.find(self)
     module.add(loopComponent.openPersistentLoop(self, kernel))
-        
+
     module.add(self.setupNewTile(kernel, tensorParametersA, tensorParametersB, isOptNLL=False))
 
     if self.do["executeToPrefetchEnd"]:
@@ -2583,7 +2589,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
 
       # need to unroll tail loop for the following cases
       mEnd = 1
-      if kernel["ProblemType"]["Sparse"]:
+      if kernel["ProblemType"]["Sparse"] and kernel["DirectToVgprSparseMetadata"]:
         mEnd = kernel["LoopIters"]
       if (kernel["DirectToVgprA"] or kernel["DirectToVgprB"] or kernel["DirectToLdsA"] or kernel["DirectToLdsB"]):
         mEnd = kernel["DepthU"]//(kernel["MatrixInstK"]*kernel["LocalSplitU"])
@@ -2846,9 +2852,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
       module.addComment1("not-LocalSplitU: global write")
       module.add(self.notLocalSplitUGlobalWrite(kernel, tensorParametersA, tensorParametersB))
 
-    # function suffix
     module.add(self.functionEnd(kernel, addLabel=True))
-    module.add(self.functionSuffix(kernel))
 
     # Tensile pass
     tpo = TensilePassOptions()
@@ -2905,7 +2909,8 @@ class KernelWriter(metaclass=abc.ABCMeta):
 
     self.states.asmCaps  = self.ti.getAsmCaps()
     self.states.archCaps = self.ti.getArchCaps()
-
+    self.states.regCaps  = self.ti.getRegCaps()
+    
     self.asmAssert = Assert(self.states.laneSGPRCount, kernel["WavefrontSize"], self.db["EnableAsserts"])
 
     # Only assembly supports scheduling
@@ -3257,7 +3262,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
     self.states.bpeCexternal = self.states.bpeCexternalGSU1
     if kernel["_GlobalAccumulation"] and kernel["_GlobalAccumulation"] != 'PartialsBuffer':
       self.states.bpeCexternal = self.states.bpeCinternal
-      
+
 
     # special case for wmma h and b
     if (kernel["EnableMatrixInstruction"]
@@ -3884,10 +3889,10 @@ class KernelWriter(metaclass=abc.ABCMeta):
     vgprIdx += 1 # for vgpr serial id
 
     self.states.totalVgprs = max(vgprIdx, self.states.c.numVgprValu)
-    if self.states.totalVgprs < kernel["MinVgprNumber"] or self.states.totalVgprs > kernel["MaxVgprNumber"]:
-      raise RuntimeError("Generating asm kernel error: total vgpr: %u not in [%u, %u].\n" % (self.states.totalVgprs, kernel["MinVgprNumber"], kernel["MaxVgprNumber"]))
+    if self.states.totalVgprs < 0 or self.states.totalVgprs > self.states.regCaps["MaxVgpr"]:
+      raise RuntimeError("Generating asm kernel error: total vgpr: %u not in [0, %u].\n" % (self.states.totalVgprs, self.states.regCaps["MaxVgpr"]))
 
-    agprLimit = kernel["TotalVgprNumber"] - kernel["MaxVgprNumber"]
+    agprLimit = self.states.regCaps["PhysicalMaxVgpr"] - self.states.regCaps["MaxVgpr"]
     if self.states.totalAgprs > agprLimit:
       raise RuntimeError("Generating asm kernel error: total agpr: %u not in [0, %u].\n" % (self.states.totalAgprs, agprLimit) )
 
@@ -4064,7 +4069,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
       self.defineSgpr("AddressWS", numSgprAddressWS)
       self.defineSgpr("AddressFlags", numSgprAddressFlags)
       self.states.numSgprStreamK += numSgprAddressWS + numSgprAddressFlags
-    
+
     #asm input interface depen
     self.defineSgpr("StridesD", self.states.d.numSgprStrides)
     self.defineSgpr("StridesC", self.states.c.numSgprStrides)
@@ -4137,7 +4142,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
       self.defineSgpr("StreamKLocalEnd", 1)
       if kernel["StreamKAtomic"] == 0:
         self.defineSgpr("SrdWS", 4, 4)
-    
+
     #------------------------
     # Registers defined below this point are not available in the post-loop
     # Post-loop is after tail loop exits, ie the store code.
@@ -4187,9 +4192,9 @@ class KernelWriter(metaclass=abc.ABCMeta):
       tempSgpr = SgprSlot.pop(0)
       self.sgprPool.checkIn(tempSgpr)
 
-    if self.sgprPool.size() > self.consts.maxSgprs:
+    if self.sgprPool.size() > self.states.regCaps["MaxSgpr"]:
       print ("warning: Number of first half of defined SGPRS (%d) overflowed max SGPRS (%d)." \
-               % (self.sgprPool.size(), self.consts.maxSgprs))
+               % (self.sgprPool.size(), self.states.regCaps["MaxSgpr"]))
 
     ########################################
     # Register Pools
@@ -4508,6 +4513,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
     tP["localWriteSwapByteOffset"] = 0
     tP["gpr"] = {}
     tP["metadataWriteSwapByteOffset"] = 0
+    tP["isSwizzled"] = (kernel["ProblemType"]["SwizzleTensorB"] and tP["isB"]) or (kernel["ProblemType"]["SwizzleTensorA"] and tP["isA"])
 
   ##############################################################################
   # Global Read Addresses: Tile Assignment A/B
@@ -4918,13 +4924,6 @@ class KernelWriter(metaclass=abc.ABCMeta):
   ##############################################################################
   @abc.abstractmethod
   def isSwapGlobalReadOrderForDtvOrDtl(self, kernel, prefetch1=False):
-    return ""
-
-  ##############################################################################
-  # Function Suffix
-  ##############################################################################
-  @abc.abstractmethod
-  def functionSuffix(self, kernel):
     return ""
 
   ##############################################################################

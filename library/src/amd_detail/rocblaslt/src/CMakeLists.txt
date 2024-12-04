@@ -63,6 +63,9 @@ if( BUILD_WITH_TENSILE )
   if(Tensile_KEEP_BUILD_TMP)
     set(Tensile_Options ${Tensile_Options} KEEP_BUILD_TMP)
   endif()
+  if(Tensile_EXPERIMENTAL)
+    set(Tensile_Options ${Tensile_Options} EXPERIMENTAL)
+  endif()
 
   # Add a build target for Tensile kernel library
   # Runtime language is HIP by default
@@ -133,5 +136,6 @@ set(rocblaslt_source
   src/amd_detail/rocblaslt/src/rocblaslt_mat.cpp
   src/amd_detail/rocblaslt/src/utility.cpp
   src/amd_detail/rocblaslt/src/rocblaslt_transform.cpp
+  src/amd_detail/rocblaslt/src/UserDrivenTuningParser.cpp
   ${Tensile_SRC}
 )

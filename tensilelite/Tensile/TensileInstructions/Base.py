@@ -53,6 +53,7 @@ class TensileInstructions:
         assemblerPath: str
         asmCaps: dict
         archCaps: dict
+        regCaps: dict
         asmBugs: dict
 
     @dataclass
@@ -68,9 +69,10 @@ class TensileInstructions:
             if isaVersion not in self._isaInfo: # type: ignore
                 asmCaps  = _initAsmCaps(isaVersion, assemblerPath, debug)
                 archCaps = _initArchCaps(isaVersion)
+                regCaps  = _initRegisterCaps(isaVersion, archCaps)
                 asmBugs  = _initAsmBugs(asmCaps)
                 self._isaInfo[isaVersion] = TensileInstructions.IsaInfo(assemblerPath, # type: ignore
-                    asmCaps, archCaps, asmBugs)
+                    asmCaps, archCaps, regCaps, asmBugs)
 
     def setDebugLevel(self, level: int) -> None:
         __TI_DEBUG_LEVEL__ = level
@@ -98,6 +100,9 @@ class TensileInstructions:
 
     def getArchCaps(self) -> dict:
         return self._isaInfo[self._kernelInfo[threading.get_ident()].isa].archCaps # type: ignore
+
+    def getRegCaps(self) -> dict:
+        return self._isaInfo[self._kernelInfo[threading.get_ident()].isa].regCaps
 
     def getAsmBugs(self) -> dict:
         return self._isaInfo[self._kernelInfo[threading.get_ident()].isa].asmBugs # type: ignore
@@ -148,6 +153,10 @@ class Item:
     @property
     def archCaps(self) -> dict:
         return _global_ti.getArchCaps()
+    
+    @property
+    def regCaps(self) -> dict:
+        return _global_ti.getRegCaps()
 
     @property
     def asmBugs(self) -> dict:
@@ -334,7 +343,40 @@ def _initArchCaps(isaVersion) -> dict:
     rv["DSLow16NotPreserve"]       = isaVersion[0] == (12)
     rv["WrokGroupIdFromTTM"] = isaVersion[0] == (12)
     rv["NoSDWA"]             = isaVersion[0] == (12)
+    rv["VOP3ByteSel"]      = isaVersion[0] == (12)
     rv["HasFP8_OCP"]         = isaVersion[0] == (12)
+    return rv
+
+def _initRegisterCaps(isaVersion, archCaps) -> dict:
+    rv = {}
+    rv["MaxVgpr"] = 256
+    # max allowed is 112 out of 112 , 6 is used by hardware 4 SGPRs are wasted
+    rv["MaxSgpr"] = 102
+
+    rv["PhysicalMaxVgpr"] = 512
+    rv["PhysicalMaxSgpr"] = 800
+
+    if isaVersion[0] == 10:
+        rv["PhysicalMaxVgprCU"] = 1024 * 32
+    elif isaVersion[0] == 11:
+        if isaVersion[2] == 2:
+            rv["PhysicalMaxVgprCU"] = 1024 * 32
+        else:
+            rv["PhysicalMaxVgprCU"] = 1536 * 32
+    elif isaVersion[0] == 12:
+        rv["PhysicalMaxVgprCU"] = 1536 * 32
+    elif isaVersion[0] == 9:
+        if archCaps["ArchAccUnifiedRegs"]:
+            rv["PhysicalMaxVgprCU"] = 2048 * 64
+        else:
+            rv["PhysicalMaxVgprCU"] = 1024 * 64
+    elif isaVersion[0] == 8:
+        rv["PhysicalMaxVgprCU"] = 1024 * 64
+    elif isaVersion[0] == 0:
+        rv["PhysicalMaxVgprCU"] = 0
+    else:
+        assert 0, "No valid VGPR value for this platform"
+
     return rv
 
 def _initAsmBugs(asmCaps) -> dict:
