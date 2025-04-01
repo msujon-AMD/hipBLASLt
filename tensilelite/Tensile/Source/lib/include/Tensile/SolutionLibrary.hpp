@@ -33,13 +33,13 @@
 
 #include <Tensile/Tensile.hpp>
 
-namespace Tensile
+namespace TensileLite
 {
     /**
  * \ingroup Tensile
  * \defgroup SolutionLibrary Solution Library Classes
  *
- * \copydoc Tensile::SolutionLibrary
+ * \copydoc TensileLite::SolutionLibrary
  */
 
     enum class SolutionLibrarySearchType
@@ -139,6 +139,12 @@ namespace Tensile
             return std::shared_ptr<MySolution>();
         }
 
+        virtual std::shared_ptr<MySolution> getSolutionByIndex(Hardware const&  hardware, const int index) const
+        {
+            throw std::runtime_error("[getSolutionByIndex] You should not reach here.");
+            return std::shared_ptr<MySolution>();
+        }
+
         virtual std::shared_ptr<MySolution> findBestSolution(MyProblem const& problem,
                                                              Hardware const&  hardware,
                                                              double* fitness = nullptr) const
@@ -194,4 +200,4 @@ namespace Tensile
         }
     };
 
-} // namespace Tensile
+} // namespace TensileLite

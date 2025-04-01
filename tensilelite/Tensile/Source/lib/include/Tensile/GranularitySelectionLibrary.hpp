@@ -35,7 +35,7 @@
 
 #include <Tensile/PropertyMatching.hpp>
 
-namespace Tensile
+namespace TensileLite
 {
     /**
  * \ingroup SolutionLibrary
@@ -240,7 +240,7 @@ namespace Tensile
                     useSolution = true;
                     if(searchType == SolutionLibrarySearchType::DEFAULT)
                     {
-                        size_t ws = (*row.second).requiredWorkspaceSizeGroupedGemm(problems);
+                        size_t ws = (*row.second).requiredWorkspaceSizeGroupedGemm(problems, hardware);
 
                         for(int idx = 0; idx < problems.size(); idx++)
                         {
@@ -263,7 +263,7 @@ namespace Tensile
                            == static_cast<size_t>(-1))
                         {
                             (*row.second).requiredHostWorkspaceSizePerProblem
-                                = (*row.second).requiredHostSizeGroupedGemmSingle(problems[0]);
+                                = (*row.second).requiredHostSizeGroupedGemmSingle(problems[0],hardware);
                         }
                         rv.insert(row.second);
                     }
@@ -292,4 +292,4 @@ namespace Tensile
             return rv;
         }
     };
-} // namespace Tensile
+} // namespace TensileLite

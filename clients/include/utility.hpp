@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -73,7 +73,7 @@
 #undef stderr
 #pragma GCC poison cout cerr clog stdout stderr gets puts putchar fputs fprintf printf sprintf    \
     vfprintf vprintf vsprintf perror strerror strtok gmtime ctime asctime localtime tmpnam putenv \
-    clearenv fcloseall ecvt fcvt sleep abort strsignal
+        clearenv fcloseall ecvt fcvt sleep abort strsignal
 #else
 // Suppress warnings about hipMalloc(), hipFree() except in hipblaslt-test and hipblaslt-bench
 #undef hipMalloc
@@ -102,6 +102,7 @@ inline bool is_bias_enabled(hipblasLtEpilogue_t value_)
     case HIPBLASLT_EPILOGUE_DGELU_BGRAD:
     case HIPBLASLT_EPILOGUE_BGRADA:
     case HIPBLASLT_EPILOGUE_BGRADB:
+    case HIPBLASLT_EPILOGUE_SWISH_BIAS_EXT:
         return true;
     default:
         return false;
@@ -119,6 +120,8 @@ enum class hipblaslt_batch_type
 class hipblaslt_local_handle
 {
     hipblasLtHandle_t m_handle;
+    std::string    m_sol_selec_saved_status = "";
+    bool           m_sol_selec_env_set{false};
 
 public:
     hipblaslt_local_handle();
@@ -212,8 +215,8 @@ public:
                                  hipblasOperation_t   opB,
                                  hipblasComputeType_t compute_type,
                                  hipDataType          scale_type,
-                                 hipDataType          compute_input_typeA=HIPBLASLT_DATATYPE_INVALID,
-                                 hipDataType          compute_input_typeB=HIPBLASLT_DATATYPE_INVALID)
+                                 hipDataType compute_input_typeA = HIPBLASLT_DATATYPE_INVALID,
+                                 hipDataType compute_input_typeB = HIPBLASLT_DATATYPE_INVALID)
     {
         this->m_status = hipblasLtMatmulDescCreate(&this->m_descr, compute_type, scale_type);
 
@@ -222,11 +225,21 @@ public:
         hipblasLtMatmulDescSetAttribute(
             this->m_descr, HIPBLASLT_MATMUL_DESC_TRANSB, &opB, sizeof(int32_t));
 
-        hipblasLtMatmulDescSetAttribute(this->m_descr, HIPBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_A_EXT, &compute_input_typeA, sizeof(void*));
-        hipblasLtMatmulDescSetAttribute(this->m_descr, HIPBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_B_EXT, &compute_input_typeB, sizeof(void*));
+        hipblasLtMatmulDescSetAttribute(this->m_descr,
+                                        HIPBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_A_EXT,
+                                        &compute_input_typeA,
+                                        sizeof(void*));
+        hipblasLtMatmulDescSetAttribute(this->m_descr,
+                                        HIPBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_B_EXT,
+                                        &compute_input_typeB,
+                                        sizeof(void*));
     }
 
-    ~hipblaslt_local_matmul_descr() {}
+    ~hipblaslt_local_matmul_descr()
+    {
+        if(this->m_status == HIPBLAS_STATUS_SUCCESS)
+            hipblasLtMatmulDescDestroy(this->m_descr);
+    }
 
     hipblaslt_local_matmul_descr(const hipblaslt_local_matmul_descr&)            = delete;
     hipblaslt_local_matmul_descr(hipblaslt_local_matmul_descr&&)                 = delete;
@@ -307,7 +320,7 @@ public:
 
 /* ============================================================================================ */
 /*  device query and print out their ID and name */
-int64_t query_device_property();
+int64_t query_device_property(int device_id, hipDeviceProp_t &props);
 
 /*  set current device to device_id */
 void set_device(int64_t device_id);
@@ -479,8 +492,7 @@ void print_strided_batched(
 /* ===================================================================== */
 /*! \brief For special numerical types, to convert a value to such type. */
 template <typename T, typename Accumulator>
-typename std::enable_if<std::is_same<int8_t, T>::value, T>::type
-    saturate_cast(Accumulator val)
+typename std::enable_if<std::is_same<int8_t, T>::value, T>::type saturate_cast(Accumulator val)
 {
     if constexpr(std::is_same<Accumulator, hipblasLtHalf>::value
                  || std::is_same<Accumulator, hip_bfloat16>::value)
@@ -508,11 +520,11 @@ typename std::enable_if<std::is_same<int8_t, T>::value, T>::type
 /* ==================================================================== */
 /*! \brief For common numerical types, to convert a value to such type. */
 template <typename T, typename Accumulator>
-typename std::enable_if<!std::is_same<int8_t, T>::value, T>::type
-    saturate_cast(Accumulator val)
+typename std::enable_if<!std::is_same<int8_t, T>::value, T>::type saturate_cast(Accumulator val)
 {
     return static_cast<T>(val);
 }
 
 std::vector<void*> benchmark_allocation();
-int32_t hipblaslt_get_arch_major();
+int32_t            hipblaslt_get_arch_major();
+void hipblaslt_print_version();

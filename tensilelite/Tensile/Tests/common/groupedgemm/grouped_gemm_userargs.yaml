@@ -1,9 +1,8 @@
 TestParameters:
-  marks: [skip-gfx1100, skip-gfx1101, skip-gfx1102] # not supported yet
+  marks: [skip-gfx1100, skip-gfx1101, skip-gfx1102, skip-gfx1200, skip-gfx1201] # not supported yet
 
 GlobalParameters:
   MinimumRequiredVersion: 4.14.0
-  MergeFiles: False
   NumWarmups: 1
   SleepPercent: 50
   EnqueuesPerSync: 100
@@ -141,7 +140,7 @@ BenchmarkProblems:
       UseE:          False
       Activation:    False
       GroupedGemm:   True
-      UseScaleAlphaVec: True
+      UseScaleAlphaVec: 1
       SupportUserArgs: True
     - # BenchmarkProblemSizeGroup - Standard
       InitialSolutionParameters:

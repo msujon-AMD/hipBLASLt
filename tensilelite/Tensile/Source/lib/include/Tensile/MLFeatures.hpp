@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2019-2023 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2019-2025 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,7 +32,7 @@
 
 #include <cstddef>
 
-namespace Tensile
+namespace TensileLite
 {
     /**
      * \addtogroup Properties
@@ -70,7 +70,7 @@ namespace Tensile
         using MLFeature = Property<Object, float>;
 
         /**
-         * \copydoc Tensile::Property_CRTP
+         * \copydoc TensileLite::Property_CRTP
          */
         template <typename Class, typename Object>
         using MLFeature_CRTP = Property_CRTP<Class, Object, float>;
@@ -123,6 +123,26 @@ namespace Tensile
             virtual float operator()(ContractionProblemGemm const& problem) const
             {
                 return (float)problem.freeSizeB(index);
+            }
+        };
+
+        struct BatchSize : public MLFeature_CRTP<BatchSize, ContractionProblemGemm>
+        {
+            enum
+            {
+                HasIndex = true,
+                HasValue = false
+            };
+            size_t index;
+
+            static std::string Type()
+            {
+                return "BatchSize";
+            }
+
+            virtual float operator()(ContractionProblemGemm const& problem) const
+            {
+                return (float)problem.batchSize(index);
             }
         };
 
@@ -234,4 +254,4 @@ namespace Tensile
          * @}
          */
     } // namespace MLFeatures
-} // namespace Tensile
+} // namespace TensileLite

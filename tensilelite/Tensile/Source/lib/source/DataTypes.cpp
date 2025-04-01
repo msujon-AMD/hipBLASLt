@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2023 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,11 +29,8 @@
 
 #include <algorithm>
 
-namespace Tensile
+namespace TensileLite
 {
-    std::map<DataType, DataTypeInfo> DataTypeInfo::data;
-    std::map<std::string, DataType>  DataTypeInfo::typeNames;
-
     std::string ToString(DataType d)
     {
         switch(d)
@@ -60,12 +57,20 @@ namespace Tensile
             return "Float8";
         case DataType::BFloat8:
             return "BFloat8";
+        case DataType::Float8_fnuz:
+            return "Float8_fnuz";
+        case DataType::BFloat8_fnuz:
+            return "BFloat8_fnuz";
         case DataType::XFloat32:
             return "XFloat32";
         case DataType::Float8BFloat8:
             return "Float8BFloat8";
         case DataType::BFloat8Float8:
             return "BFloat8Float8";
+        case DataType::Float8BFloat8_fnuz:
+            return "Float8BFloat8_fnuz";
+        case DataType::BFloat8Float8_fnuz:
+            return "BFloat8Float8_fnuz";
         case DataType::Count:;
         }
         return "Invalid";
@@ -97,12 +102,20 @@ namespace Tensile
             return "F8";
         case DataType::BFloat8:
             return "B8";
+        case DataType::Float8_fnuz:
+            return "F8N";
+        case DataType::BFloat8_fnuz:
+            return "B8N";
         case DataType::XFloat32:
             return "X";
         case DataType::Float8BFloat8:
             return "F8B8";
         case DataType::BFloat8Float8:
             return "B8F8";
+        case DataType::Float8BFloat8_fnuz:
+            return "F8B8N";
+        case DataType::BFloat8Float8_fnuz:
+            return "B8F8N";
         case DataType::Count:;
         }
         return "Invalid";
@@ -134,15 +147,35 @@ namespace Tensile
             return TypeInfo<Float8>::ElementSize;
         case DataType::BFloat8:
             return TypeInfo<BFloat8>::ElementSize;
+        case DataType::Float8_fnuz:
+            return TypeInfo<Float8_fnuz>::ElementSize;
+        case DataType::BFloat8_fnuz:
+            return TypeInfo<BFloat8_fnuz>::ElementSize;
         case DataType::XFloat32:
             return TypeInfo<XFloat32>::ElementSize;
         case DataType::Float8BFloat8:
             return TypeInfo<Float8BFloat8>::ElementSize;
         case DataType::BFloat8Float8:
             return TypeInfo<BFloat8Float8>::ElementSize;
+        case DataType::Float8BFloat8_fnuz:
+            return TypeInfo<Float8BFloat8_fnuz>::ElementSize;
+        case DataType::BFloat8Float8_fnuz:
+            return TypeInfo<BFloat8Float8_fnuz>::ElementSize;
         case DataType::Count:;
         }
         return 1;
+    }
+
+    std::map<DataType, DataTypeInfo>* DataTypeInfo::getData()
+    {
+        static std::map<DataType, DataTypeInfo> data;
+        return &data;
+    }
+
+    std::map<std::string, DataType>* DataTypeInfo::getTypeNames()
+    {
+        static std::map<std::string, DataType> typeNames;
+        return &typeNames;
     }
 
     template <typename T>
@@ -179,9 +212,13 @@ namespace Tensile
         registerTypeInfo<int8_t>();
         registerTypeInfo<Float8>();
         registerTypeInfo<BFloat8>();
+        registerTypeInfo<Float8_fnuz>();
+        registerTypeInfo<BFloat8_fnuz>();
         registerTypeInfo<XFloat32>();
         registerTypeInfo<Float8BFloat8>();
         registerTypeInfo<BFloat8Float8>();
+        registerTypeInfo<Float8BFloat8_fnuz>();
+        registerTypeInfo<BFloat8Float8_fnuz>();
     }
 
     void DataTypeInfo::registerAllTypeInfoOnce()
@@ -195,8 +232,11 @@ namespace Tensile
 
     void DataTypeInfo::addInfoObject(DataTypeInfo const& info)
     {
-        data[info.dataType]  = info;
-        typeNames[info.name] = info.dataType;
+        auto* data      = getData();
+        auto* typeNames = getTypeNames();
+
+        data->emplace(info.dataType, info);
+        typeNames->emplace(info.name, info.dataType);
     }
 
     DataTypeInfo const& DataTypeInfo::Get(int index)
@@ -208,8 +248,9 @@ namespace Tensile
     {
         registerAllTypeInfoOnce();
 
-        auto iter = data.find(t);
-        if(iter == data.end())
+        auto* data = getData();
+        auto  iter = data->find(t);
+        if(iter == data->end())
             throw std::runtime_error(concatenate("Invalid data type: ", static_cast<int>(t)));
 
         return iter->second;
@@ -219,8 +260,9 @@ namespace Tensile
     {
         registerAllTypeInfoOnce();
 
-        auto iter = typeNames.find(str);
-        if(iter == typeNames.end())
+        auto* typeNames = getTypeNames();
+        auto  iter      = typeNames->find(str);
+        if(iter == typeNames->end())
             throw std::runtime_error(concatenate("Invalid data type: ", str));
 
         return Get(iter->second);
@@ -281,8 +323,9 @@ namespace Tensile
         return std::visit(
             [](const auto& cv) {
                 using T = std::decay_t<decltype(cv)>;
-                if constexpr(std::is_same_v<T, std::complex<float>>
-                             || std::is_same_v<T, std::complex<double>>)
+                if constexpr(std::is_same_v<
+                                 T,
+                                 std::complex<float>> || std::is_same_v<T, std::complex<double>>)
                     return "(" + std::to_string(cv.real()) + ", " + std::to_string(cv.imag()) + ")";
                 else
                     return std::to_string(cv);
@@ -314,8 +357,12 @@ namespace Tensile
             return (*std::get_if<Float8>(&d)) == Float8(static_cast<float>(value));
         case static_cast<int>(DataType::BFloat8):
             return (*std::get_if<BFloat8>(&d)) == BFloat8(static_cast<float>(value));
+        case static_cast<int>(DataType::Float8_fnuz):
+            return (*std::get_if<Float8_fnuz>(&d)) == Float8_fnuz(static_cast<float>(value));
+        case static_cast<int>(DataType::BFloat8_fnuz):
+            return (*std::get_if<BFloat8_fnuz>(&d)) == BFloat8_fnuz(static_cast<float>(value));
         default:
             throw std::runtime_error("Unsupported variant cast type.");
         }
     }
-} // namespace Tensile
+} // namespace TensileLite

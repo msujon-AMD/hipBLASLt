@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include "datatype_interface.hpp"
 #include "hipblaslt_datatype2string.hpp"
 #include "hipblaslt_math.hpp"
 #include "hipblaslt_ostream.hpp"
@@ -41,9 +42,6 @@
 // Predeclare enumerator
 enum hipblaslt_argument : int;
 
-/*! \brief device matches pattern */
-bool gpu_arch_match(const std::string& gpu_arch, const char pattern[4]);
-
 /***************************************************************************
  *! \brief Class used to parse command arguments in both client & gtest    *
  * WARNING: If this data is changed, then hipblaslt_common.yaml must also be *
@@ -52,6 +50,14 @@ bool gpu_arch_match(const std::string& gpu_arch, const char pattern[4]);
 constexpr std::size_t MAX_SUPPORTED_NUM_PROBLEMS{32};
 struct Arguments
 {
+    enum ScalingFormat
+    {
+        None   = 0,
+        Scalar = 1,
+        Vector = 2,
+        Block  = 3
+    };
+
     /*************************************************************************
      *                    Beginning Of Arguments                             *
      *************************************************************************/
@@ -103,9 +109,9 @@ struct Arguments
 
     hipblaslt_initialization initialization;
 
-    // the gpu arch string after "gfx" for which the test is valid
-    // '?' is wildcard char, empty string is default as valid on all
-    char gpu_arch[4];
+    // the gpu arch string after "gfx" for which the test is valid,
+    // it represents a regular expression.
+    char gpu_arch[16];
 
     // memory padding for testing write out of bounds
     uint32_t pad;
@@ -119,6 +125,7 @@ struct Arguments
     uint8_t devices;
 
     int8_t norm_check;
+    int8_t allclose_check;
     int8_t unit_check;
     int8_t timing;
 
@@ -129,32 +136,40 @@ struct Arguments
     float                     activation_arg1; // threshold when activation type is relu
     float                     activation_arg2; // upperbound when activation type is relu
 
-    hipDataType           bias_type;
-    hipblaslt_bias_source bias_source;
-    bool                  bias_vector;
-    bool                  scaleA;
-    bool                  scaleB;
-    bool                  scaleC;
-    bool                  scaleD;
-    bool                  scaleE;
-    bool                  scaleAlpha_vector;
-    bool                  amaxScaleA;
-    bool                  amaxScaleB;
-    bool                  amaxD;
-    bool                  c_equal_d;
-    bool                  HMM;
-    bool                  use_e;
-    bool                  gradient;
-    bool                  norm_check_assert;
+    hipDataType              bias_type;
+    hipDataType              aux_type;
+    hipblaslt_bias_source    bias_source;
+    bool                     bias_vector;
+    hipblaslt_scaling_format scaleA;
+    hipblaslt_scaling_format scaleB;
+    bool                     scaleC;
+    bool                     scaleD;
+    bool                     scaleE;
+    bool                     scaleAlpha_vector;
+    bool                     amaxScaleA;
+    bool                     amaxScaleB;
+    bool                     amaxD;
+    bool                     c_equal_d;
+    bool                     HMM;
+    bool                     use_e;
+    bool                     gradient;
+    bool                     norm_check_assert;
+    bool                     swizzle_a;
+
+    uint32_t scaleABlockRowSize;
+    uint32_t scaleABlockColSize;
+    uint32_t scaleBBlockRowSize;
+    uint32_t scaleBBlockColSize;
 
     // API related
     bool    use_ext;
     bool    use_ext_setproblem;
     int     algo_method; // 0 for getheuristic, 1 for get all algos, 2 for algo index
+    int     api_method; // 0 for c, 1 for mix, 2 for cpp
     bool    use_user_args;
     int32_t rotating;
     bool    use_gpu_timer;
-
+    float   skip_slow_solution_ratio;
     // tuning
     int32_t gsu_vector[MAX_SUPPORTED_NUM_PROBLEMS]; // This is for client
     int32_t wgm_vector[MAX_SUPPORTED_NUM_PROBLEMS]; // This is for client
@@ -164,6 +179,7 @@ struct Arguments
     bool print_kernel_info;
 
     bool flush;
+    int tensile_solution_selection_method;
 
     /*************************************************************************
      *                     End Of Arguments                                  *
@@ -219,6 +235,7 @@ struct Arguments
     OPER(streams) SEP                \
     OPER(devices) SEP                \
     OPER(norm_check) SEP             \
+    OPER(allclose_check) SEP         \
     OPER(unit_check) SEP             \
     OPER(timing) SEP                 \
     OPER(transA) SEP                 \
@@ -227,6 +244,7 @@ struct Arguments
     OPER(activation_arg1) SEP        \
     OPER(activation_arg2) SEP        \
     OPER(bias_type) SEP              \
+    OPER(aux_type) SEP               \
     OPER(bias_source) SEP            \
     OPER(bias_vector) SEP            \
     OPER(scaleA) SEP                 \
@@ -243,17 +261,25 @@ struct Arguments
     OPER(use_e) SEP                  \
     OPER(gradient) SEP               \
     OPER(norm_check_assert) SEP      \
+    OPER(swizzle_a) SEP              \
+    OPER(scaleABlockRowSize) SEP     \
+    OPER(scaleABlockColSize) SEP     \
+    OPER(scaleBBlockRowSize) SEP     \
+    OPER(scaleBBlockColSize) SEP     \
     OPER(use_ext) SEP                \
     OPER(use_ext_setproblem) SEP     \
     OPER(algo_method) SEP            \
+    OPER(api_method) SEP             \
     OPER(use_user_args) SEP          \
     OPER(rotating) SEP               \
     OPER(use_gpu_timer) SEP          \
+    OPER(skip_slow_solution_ratio) SEP\
     OPER(gsu_vector) SEP             \
     OPER(wgm_vector) SEP             \
     OPER(print_solution_found) SEP   \
     OPER(print_kernel_info) SEP      \
-    OPER(flush) SEP
+    OPER(flush) SEP                  \
+    OPER(tensile_solution_selection_method) SEP
 
     // clang-format on
 
@@ -321,6 +347,171 @@ private:
         return T(r);
     }
 };
+
+inline bool alpha_isnan_type(const Arguments& arg, hipDataType type)
+{
+    switch(type)
+    {
+    case HIP_R_32F:
+        return arg.alpha_isnan<float>();
+    case HIP_R_64F:
+        return arg.alpha_isnan<double>();
+    case HIP_R_16F:
+        return arg.alpha_isnan<hipblasLtHalf>();
+    case HIP_R_32I:
+        return arg.alpha_isnan<int32_t>();
+    default:
+        hipblaslt_cerr << "Error type in alpha_isnan_type()" << std::endl;
+        return arg.alpha_isnan<float>();
+    }
+}
+
+inline bool beta_isnan_type(const Arguments& arg, hipDataType type)
+{
+    switch(type)
+    {
+    case HIP_R_32F:
+        return arg.beta_isnan<float>();
+    case HIP_R_64F:
+        return arg.beta_isnan<double>();
+    case HIP_R_16F:
+        return arg.beta_isnan<hipblasLtHalf>();
+    case HIP_R_32I:
+        return arg.beta_isnan<int32_t>();
+    default:
+        hipblaslt_cerr << "Error type in beta_isnan_type()" << std::endl;
+        return arg.beta_isnan<float>();
+    }
+}
+
+inline void set_alpha_type(computeTypeInterface& h_alpha, const Arguments& arg, hipDataType type)
+{
+    switch(type)
+    {
+    case HIP_R_32F:
+        h_alpha.f32 = arg.get_alpha<float>();
+        return;
+    case HIP_R_64F:
+        h_alpha.f64 = arg.get_alpha<double>();
+        return;
+    case HIP_R_16F:
+        h_alpha.f16 = arg.get_alpha<hipblasLtHalf>();
+        return;
+    case HIP_R_32I:
+        h_alpha.i32 = arg.get_alpha<int32_t>();
+        return;
+    default:
+        hipblaslt_cerr << "Error type in set_alpha_type()" << std::endl;
+        return;
+    }
+}
+
+inline void set_beta_type(computeTypeInterface& h_beta, const Arguments& arg, hipDataType type)
+{
+    switch(type)
+    {
+    case HIP_R_32F:
+        h_beta.f32 = arg.get_beta<float>();
+        return;
+    case HIP_R_64F:
+        h_beta.f64 = arg.get_beta<double>();
+        return;
+    case HIP_R_16F:
+        h_beta.f16 = arg.get_beta<hipblasLtHalf>();
+        return;
+    case HIP_R_32I:
+        h_beta.i32 = arg.get_beta<int32_t>();
+        return;
+    default:
+        hipblaslt_cerr << "Error type in set_beta_type()" << std::endl;
+        return;
+    }
+}
+
+inline void set_computeInterface(computeTypeInterface& src, void* ptr, hipDataType type)
+{
+    switch(type)
+    {
+    case HIP_R_32F:
+        src.f32 = *(float*)ptr;
+        return;
+    case HIP_R_64F:
+        src.f64 = *(double*)ptr;
+        return;
+    case HIP_R_16F:
+        src.f16 = *(hipblasLtHalf*)ptr;
+        return;
+    case HIP_R_32I:
+        src.i32 = *(int32_t*)ptr;
+        return;
+    default:
+        hipblaslt_cerr << "Error type in set_computeInterface()" << std::endl;
+        return;
+    }
+}
+
+inline void set_computeInterface(computeTypeInterface& src, double value, hipDataType type)
+{
+    switch(type)
+    {
+    case HIP_R_32F:
+        src.f32 = static_cast<float>(value);
+        return;
+    case HIP_R_64F:
+        src.f64 = static_cast<double>(value);
+        return;
+    case HIP_R_16F:
+        src.f16 = static_cast<hipblasLtHalf>(value);
+        return;
+    case HIP_R_32I:
+        src.i32 = static_cast<int32_t>(value);
+        return;
+    default:
+        hipblaslt_cerr << "Error type in set_computeInterface()" << std::endl;
+        return;
+    }
+}
+
+inline void
+    mul_computeInterface(computeTypeInterface& dst, computeTypeInterface& src, hipDataType type)
+{
+    switch(type)
+    {
+    case HIP_R_32F:
+        dst.f32 *= src.f32;
+        return;
+    case HIP_R_64F:
+        dst.f64 *= src.f64;
+        return;
+    case HIP_R_16F:
+        dst.f16 *= src.f16;
+        return;
+    case HIP_R_32I:
+        dst.i32 *= src.i32;
+        return;
+    default:
+        hipblaslt_cerr << "Error type in mul_computeInterface()" << std::endl;
+        return;
+    }
+}
+
+inline double get_computeInterface(const computeTypeInterface src, hipDataType type)
+{
+    switch(type)
+    {
+    case HIP_R_32F:
+        return (double)src.f32;
+    case HIP_R_64F:
+        return (double)src.f64;
+    case HIP_R_16F:
+        return (double)src.f16;
+    case HIP_R_32I:
+        return (double)src.i32;
+    default:
+        hipblaslt_cerr << "Error type in get_computeInterface()" << std::endl;
+        return 0;
+    }
+}
 
 // We make sure that the Arguments struct is C-compatible
 static_assert(std::is_standard_layout<Arguments>{},
@@ -680,7 +871,7 @@ namespace ArgumentsHelper
                 func("rotating_buffer", arg.rotating);
         };
 };
-// clang-format on
+    // clang-format on
 
 #else
 #error "Unsupported C++ version"

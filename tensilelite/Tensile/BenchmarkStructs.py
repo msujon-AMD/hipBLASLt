@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -24,12 +24,18 @@
 
 from copy import deepcopy
 import itertools
-from .Common import print1, print2, hasParam, printExit, \
-        defaultBenchmarkCommonParameters, validParameters, globalParameters, \
-        defaultBatchedBenchmarkFinalProblemSizes, defaultBenchmarkFinalProblemSizes
+
+from Tensile.Common.ValidParameters import checkParametersAreValid
+from Tensile.Common import print1, print2, hasParam, printExit
+from Tensile.Common.GlobalParameters import defaultBenchmarkCommonParameters, globalParameters, \
+                                            defaultBatchedBenchmarkFinalProblemSizes, \
+                                            defaultBenchmarkFinalProblemSizes
+from Tensile.Common.ValidParameters import validParameters
+from Tensile.SolutionStructs.Problem import ProblemType
+
 from .CustomKernels import getAllCustomKernelNames
-from .SolutionStructs import ProblemType, ProblemSizes, ActivationArgs, BiasTypeArgs, \
-        BiasDimArgs
+from .SolutionStructs import ProblemSizes, ActivationArgs, BiasTypeArgs, \
+        FactorDimArgs
 
 
 def getDefaultsForMissingParameters(paramList, defaultParams):
@@ -41,26 +47,6 @@ def getDefaultsForMissingParameters(paramList, defaultParams):
                     or name == "ProblemSizes":
                 benchmarkParams[name] = value
     return benchmarkParams
-
-
-def checkParametersAreValid(param, validParams):
-    """Ensures paramaters in params exist and have valid values as specified by validParames"""
-    (name, values) = param
-    if name == "ProblemSizes":
-        return
-    elif name == "InternalSupportParams":
-        return
-
-    if name not in validParams:
-        printExit("Invalid parameter name: {}\nValid parameters are {}." \
-                .format(name, sorted(validParameters.keys())))
-
-    for value in values:
-        if validParams[name] != -1 and value not in validParams[name]:
-            msgBase = "Invalid parameter value: {} = {}\nValid values for {} are {}{}."
-            msgExt = " (only first 32 combos printed)\nRefer to Common.py for more info" \
-                    if len(validParams[name])>32 else ""
-            printExit(msgBase.format(name, value, name, validParams[name][:32], msgExt))
 
 
 def separateParameters(paramSetList):
@@ -92,9 +78,9 @@ def checkCDBufferAndStrides(problemType, problemSizes, isCEqualD):
 class BenchmarkProcess:
     """Representation of benchmarking parameters and resulting steps"""
 
-    def __init__(self, problemTypeConfig, problemSizeGroupConfig):
+    def __init__(self, problemTypeConfig, problemSizeGroupConfig, printIndexAssignmentInfo: bool):
         """Create from the two sections of a config for a BenchmarkProblem"""
-        self.problemType = ProblemType(problemTypeConfig)
+        self.problemType = ProblemType(problemTypeConfig, printIndexAssignmentInfo)
         self.isBatched = "Batched" in problemTypeConfig and problemTypeConfig["Batched"]
         print2("# BenchmarkProcess beginning {}".format(self.problemType))
 
@@ -156,7 +142,7 @@ class BenchmarkProcess:
 
         activationConf = ""
         biasTypesConf  = ""
-        biasDimConf  = ""
+        factorDimConf  = ""
         icacheFlush = None
         if "BenchmarkFinalParameters" in config:
             sizes          = config["BenchmarkFinalParameters"][0]["ProblemSizes"]
@@ -169,13 +155,13 @@ class BenchmarkProcess:
                   if biasTypesConf:
                     printExit("Duplicated BiasTypeArgs.")
                   biasTypesConf = bfp["BiasTypeArgs"]
-                if "BiasDimArgs" in bfp:
-                  if biasDimConf:
-                    printExit("Duplicated BiasDimArgs.")
-                  biasDimConf = bfp["BiasDimArgs"]
+                if "FactorDimArgs" in bfp:
+                  if factorDimConf:
+                    printExit("Duplicated FactorDimArgs.")
+                  factorDimConf = bfp["FactorDimArgs"]
                 if "ICacheFlush" in bfp:
                   if icacheFlush is not None:
-                    printExit("Duplicated BiasDimArgs.")
+                    printExit("Duplicated ICacheFlush.")
                   icacheFlush = bfp["ICacheFlush"]
         else:
             sizes = defaultBatchedBenchmarkFinalProblemSizes if isbatched \
@@ -189,7 +175,7 @@ class BenchmarkProcess:
 
         self.biasTypesArgs  = BiasTypeArgs(self.problemType, biasTypesConf)
         self.activationArgs = ActivationArgs(self.problemType, activationConf)
-        self.biasDimArgs  = BiasDimArgs(self.problemType, biasDimConf)
+        self.factorDimArgs  = FactorDimArgs(self.problemType, factorDimConf)
         self.icacheFlushArgs = icacheFlush
 
         # validate parameter values
@@ -241,7 +227,7 @@ class BenchmarkProcess:
                 self.internalSupportParams, \
                 self.problemSizes, \
                 self.biasTypesArgs, \
-                self.biasDimArgs, \
+                self.factorDimArgs, \
                 self.activationArgs, \
                 self.icacheFlushArgs, \
                 self.benchmarkStepIdx)
@@ -304,7 +290,7 @@ def constructForkPermutations(forkParams, paramGroups):
 class BenchmarkStep:
     """A single benchmark step which consists of constant and fork parameters and a set of sizes"""
 
-    def __init__(self, forkParams, constantParams, paramGroups, customKernels, internalSupportParams, problemSizes, biasTypeArgs, biasDimArgs, activationArgs, icacheFlushArgs, idx):
+    def __init__(self, forkParams, constantParams, paramGroups, customKernels, internalSupportParams, problemSizes, biasTypeArgs, factorDimArgs, activationArgs, icacheFlushArgs, idx):
         """Basic constructor storing each argument"""
         self.forkParams = forkParams
         self.constantParams = constantParams
@@ -313,7 +299,7 @@ class BenchmarkStep:
         self.internalSupportParams = internalSupportParams
         self.problemSizes = problemSizes
         self.biasTypeArgs = biasTypeArgs
-        self.biasDimArgs = biasDimArgs
+        self.factorDimArgs = factorDimArgs
         self.activationArgs = activationArgs
         self.icacheFlushArgs = icacheFlushArgs
         self.stepIdx = idx

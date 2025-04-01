@@ -1,5 +1,5 @@
 # ########################################################################
-# Copyright (C) 2022-2023 Advanced Micro Devices, Inc.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,7 @@
 
 #enable_testing()
 find_package( GTest REQUIRED )
+find_package (Python3 REQUIRED COMPONENTS Interpreter)
 
 
 set(hipblaslt_test_source
@@ -37,6 +38,15 @@ set(hipblaslt_test_source
 add_executable( hipblaslt-test ${hipblaslt_test_source} ${hipblaslt_test_bench_common} )
 
 target_compile_definitions( hipblaslt-test PRIVATE GOOGLE_TEST )
+
+if( USE_ROCROLLER )
+   set_source_files_properties(${mxDataGen_SRC} PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-std=c++20")
+endif()
+
+
+if( LEGACY_HIPBLAS_DIRECT )
+  target_compile_definitions(hipblaslt-test PUBLIC LEGACY_HIPBLAS_DIRECT )
+endif()
 
 # Internal header includes
 target_include_directories( hipblaslt-test
@@ -87,8 +97,10 @@ endif()
 
 list( APPEND COMMON_LINK_LIBS "-lm -lstdc++fs")
 
-if (NOT BUILD_FORTRAN_CLIENTS)
-  list( APPEND COMMON_LINK_LIBS "-lgfortran -lflang -lflangrti") # for lapack
+if (CMAKE_Fortran_COMPILER_ID MATCHES "GNU")
+  list( APPEND COMMON_LINK_LIBS "-lgfortran") # for lapack
+else()
+  list( APPEND COMMON_LINK_LIBS "-lflang -lflangrti") # for lapack
 endif()
 
 #if (NOT WIN32)
@@ -112,11 +124,13 @@ set_target_properties( hipblaslt-test PROPERTIES
 
 set( HIPBLASLT_TEST_DATA "${PROJECT_BINARY_DIR}/staging/hipblaslt_gtest.data")
 add_custom_command( OUTPUT "${HIPBLASLT_TEST_DATA}"
-                    COMMAND ${python} ../common/hipblaslt_gentest.py -I ../include hipblaslt_gtest.yaml -o "${HIPBLASLT_TEST_DATA}"
+                    COMMAND "${Python3_EXECUTABLE}" ../common/hipblaslt_gentest.py -I ../include hipblaslt_gtest.yaml -o "${HIPBLASLT_TEST_DATA}"
                     DEPENDS ../common/hipblaslt_gentest.py ../include/hipblaslt_common.yaml
                             matmul_common.yaml
                             matmul_gtest.yaml
                             auxiliary_gtest.yaml
+                            smoke_gtest.yaml
+                            rocroller_gtest.yaml
                     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" )
 add_custom_target( hipblaslt-test-data
                    DEPENDS "${HIPBLASLT_TEST_DATA}" )

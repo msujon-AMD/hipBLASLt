@@ -32,7 +32,7 @@
 #include <Tensile/Tensile.hpp>
 #include <Tensile/llvm/YAML.hpp>
 
-namespace Tensile
+namespace TensileLite
 {
 
     template <typename MyProblem, typename MySolution>
@@ -44,7 +44,7 @@ namespace Tensile
 
         try
         {
-            auto inputFile = llvm::MemoryBuffer::getFile(filename);
+            auto inputFile = llvm::MemoryBuffer::getFileAsStream(filename);
 
             LibraryIOContext<MySolution> context{filename, preloaded, nullptr};
             llvm::yaml::Input            yin((*inputFile)->getMemBufferRef(), &context);
@@ -105,4 +105,4 @@ namespace Tensile
     template std::shared_ptr<SolutionLibrary<ContractionProblemGemm, ContractionSolution>>
         LLVMLoadLibraryData<ContractionProblemGemm, ContractionSolution>(
             std::vector<uint8_t> const& data, std::string filename = "");
-} // namespace Tensile
+} // namespace TensileLite

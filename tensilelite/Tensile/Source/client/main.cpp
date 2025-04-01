@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -57,10 +57,11 @@
 
 #include <chrono>
 #include <cstddef>
+#include <memory>
 
 namespace po = boost::program_options;
 
-namespace Tensile
+namespace TensileLite
 {
     namespace Client
     {
@@ -198,10 +199,13 @@ namespace Tensile
                 ("c-type",                   po::value<DataType>()->default_value(DataType::None), "C data type")
                 ("d-type",                   po::value<DataType>()->default_value(DataType::None), "D data type")
                 ("e-type",                   po::value<DataType>()->default_value(DataType::None), "E data type")
+                ("amaxD-type",               po::value<DataType>()->default_value(DataType::None), "amaxD data type")
                 ("alpha-type",               po::value<DataType>()->default_value(DataType::None), "alpha data type")
                 ("beta-type",                po::value<DataType>()->default_value(DataType::None), "beta data type")
                 ("compute-input-type",       po::value<DataType>()->default_value(DataType::None), "compute input data type")
                 ("f32-xdl-math-op",          po::value<DataType>()->default_value(DataType::None), "Use xf32 compute for float input and output matrices.")
+                ("swizzle-tensor-a",         po::value<bool>()->default_value(false), "Swizzle input tensor A.")
+                ("swizzle-tensor-b",         po::value<bool>()->default_value(false), "Swizzle input tensor B.")
                 ("activation-compute-type",  po::value<DataType>()->default_value(DataType::None), "Activation compute type.")
                 ("high-precision-accumulate", po::value<bool>()->default_value(false), "Use high-precision accumulate.")
                 ("sparse",                   po::value<int>()->default_value(0), "A or B matrix is sparse matrix.")
@@ -242,12 +246,14 @@ namespace Tensile
                 "4:Memory bound check by both side guard page")
                 ("prune-mode",               po::value<PruneSparseMode>()->default_value(PruneSparseMode::PruneRandom), "prune Sparse mode")
 
-                ("print-tensor-a",           po::value<bool>()->default_value(false), "Print tensor A.")
-                ("print-tensor-b",           po::value<bool>()->default_value(false), "Print tensor B.")
-                ("print-tensor-c",           po::value<bool>()->default_value(false), "Print tensor C.")
-                ("print-tensor-d",           po::value<bool>()->default_value(false), "Print tensor D.")
-                ("print-tensor-ref",         po::value<bool>()->default_value(false), "Print reference tensor D.")
-                ("print-tensor-bias",         po::value<bool>()->default_value(false), "Print tensor Bias.")
+                ("print-tensor-a",                  po::value<bool>()->default_value(false), "Print tensor A.")
+                ("print-tensor-b",                  po::value<bool>()->default_value(false), "Print tensor B.")
+                ("print-tensor-c",                  po::value<bool>()->default_value(false), "Print tensor C.")
+                ("print-tensor-d",                  po::value<bool>()->default_value(false), "Print tensor D.")
+                ("print-tensor-ref",                po::value<bool>()->default_value(false), "Print reference tensor D.")
+                ("print-tensor-bias",               po::value<bool>()->default_value(false), "Print tensor Bias.")
+                ("print-tensor-scale-alpha-vec",    po::value<bool>()->default_value(false), "Print tensor ScaleAlphaVec.")
+                ("print-tensor-amaxd",              po::value<bool>()->default_value(false), "Print tensor AmaxD value from both CPU and GPU.")
 
                 ("dump-tensors",             po::value<bool>()->default_value(false), "Binary dump tensors instead of printing.")
 
@@ -261,6 +267,7 @@ namespace Tensile
                 ("num-enqueues-per-sync",    po::value<int>()->default_value(1), "Enqueues per sync, will affect by min-flops-per-sync")
                 ("max-enqueues-per-sync",    po::value<int>()->default_value(-1), "Max Enqueues per sync, will affect by min-flops-per-sync")
                 ("num-syncs-per-benchmark",  po::value<int>()->default_value(1), "Syncs per benchmark")
+                ("skip-slow-solution-ratio", po::value<float>()->default_value(0.0), "ratio to skip slow solution during warm-up stage")
                 ("min-flops-per-sync",       po::value<size_t>()->default_value(0), "Minimum number of flops per sync to increase stability for small problems.")
                 ("use-gpu-timer",            po::value<bool>()->default_value(true), "Use GPU timer")
                 ("sleep-percent",            po::value<int>()->default_value(0), "Sleep percentage")
@@ -338,16 +345,18 @@ namespace Tensile
                 ("activation-enum-args",      po::value<std::vector<ActivationType>>()->default_value(std::vector<ActivationType>(1, ActivationType::None), "[]"), "Activation enum argument.")
                 ("use-bias",                  po::value<int>()->default_value(0), "Use bias.")
                 ("bias-source",               po::value<int>()->default_value(3), "Bias source.")
-                ("use-scaleAB",               po::value<bool>()->default_value(false), "Use scaleAB.")
+                ("use-scaleAB",               po::value<std::string>()->default_value(""), "Use scaleAB.")
                 ("use-scaleCD",               po::value<bool>()->default_value(false), "Use scaleCD.")
-                ("use-scaleAlphaVec",         po::value<bool>()->default_value(false), "Use scaleAlphaVec.")
+                ("use-scaleAlphaVec",         po::value<int>()->default_value(0), "Use scaleAlphaVec.")
                 ("bias-type-args",            po::value<std::vector<DataType>>()->default_value(std::vector<DataType>(1, DataType::None), "[]"), "Bias data type args.")
-                ("bias-dim-args",             po::value<std::vector<int>>()->default_value(std::vector<int>(1, 0), "[]"), "Bias dimensions args.")
+                ("factor-dim-args",           po::value<std::vector<int>>()->default_value(std::vector<int>(1, 0), "[]"), "factor dimensions args.")
                 ("icache-flush-args",         po::value<std::vector<bool>>()->default_value(std::vector<bool>(1, false), "[]"), "ICache flush args.")
                 ("use-e",                     po::value<bool>()->default_value(false), "Use E.")
                 ("use-gradient",              po::value<bool>()->default_value(false), "Use gradient.")
                 ("use-user-args",             po::value<bool>()->default_value(false), "Use user argument structure as kernel input.")
                 ("rotating-buffer-size",      po::value<int32_t>()->default_value(0), "Size of rotating buffer in the unit of MB.")
+                ("rotating-buffer-mode",      po::value<int32_t>()->default_value(0), "Rotating mode.")
+                ("output-amaxD",              po::value<bool>()->default_value(false), "Output AmaxD.")
                 ;
             // clang-format on
 
@@ -564,12 +573,12 @@ namespace Tensile
         }
 
     } // namespace Client
-} // namespace Tensile
+} // namespace TensileLite
 
 int main(int argc, const char* argv[])
 {
-    using namespace Tensile;
-    using namespace Tensile::Client;
+    using namespace TensileLite;
+    using namespace TensileLite::Client;
 
     auto args = parse_args(argc, argv);
 
@@ -587,8 +596,8 @@ int main(int argc, const char* argv[])
     auto        hardware = GetHardware(args);
     hipStream_t stream   = GetStream(args);
 
-    auto                          library = LoadSolutionLibrary(args);
-    Tensile::hip::SolutionAdapter adapter;
+    auto                              library = LoadSolutionLibrary(args);
+    TensileLite::hip::SolutionAdapter adapter;
     LoadCodeObjects(args, adapter);
 
     auto filename = args["library-file"].as<std::string>();
@@ -622,6 +631,14 @@ int main(int argc, const char* argv[])
     bool        groupedGemm      = args["grouped-gemm"].as<bool>();
     const auto& icacheFlushArgs  = args["icache-flush-args"].as<std::vector<bool>>();
 
+    float skip_slow_solution_ratio = args["skip-slow-solution-ratio"].as<float>();
+    if(skip_slow_solution_ratio > 1.0 || skip_slow_solution_ratio < 0.0)
+    {
+        std::cout << "Invalid Skip Slow Solution Ratio: " << skip_slow_solution_ratio << std::endl;
+        std::cout << "Please Set Valid Ratio : (0.0 ~ 1.0)." << std::endl;
+        exit(1);
+    }
+
     if(firstSolutionIdx < 0)
         firstSolutionIdx = library->solutions.begin()->first;
 
@@ -631,8 +648,7 @@ int main(int argc, const char* argv[])
         iter--;
     }
 
-    auto* ptr      = new DataInitialization(args, problemFactory);
-    auto  dataInit = std::shared_ptr<DataInitialization>(ptr);
+    auto dataInit = std::make_shared<DataInitialization>(args, problemFactory);
 
     auto solutionIterator = SolutionIterator::Default(library, hardware, args);
 
@@ -715,8 +731,9 @@ int main(int argc, const char* argv[])
                 size_t enq                  = listeners.numEnqueuesPerSync();
                 size_t maxRotatingBufferNum = max(warmupInvocations, syncs * enq);
 
-                auto inputArr
-                    = dataInit->prepareRotatingGPUOutput(maxRotatingBufferNum, problem, inputs);
+                auto inputArr = dataInit->prepareRotatingGPUOutput(
+                    maxRotatingBufferNum, problem, inputs, stream);
+                static_cast<void>(hipDeviceSynchronize());
                 bool resetInput = false;
                 while(solutionIterator->moreSolutionsInProblem())
                 {
@@ -760,57 +777,54 @@ int main(int argc, const char* argv[])
                                 }
 
                                 size_t       warmupInvocations = listeners.numWarmupRuns();
-                                size_t       eventCount        = gpuTimer ? kernels[0].size() : 0;
-                                TimingEvents warmupStartEvents(warmupInvocations, eventCount);
-                                TimingEvents warmupStopEvents(warmupInvocations, eventCount);
+                                size_t       warmupEventCount  = kernels[0].size();
+                                TimingEvents warmupStartEvents(warmupInvocations, warmupEventCount);
+                                TimingEvents warmupStopEvents(warmupInvocations, warmupEventCount);
 
+                                listeners.preWarmup();
                                 for(int i = 0; i < warmupInvocations; i++)
                                 {
                                     size_t kIdx = i % kernels.size();
-                                    listeners.preWarmup();
-                                    if(gpuTimer)
-                                        HIP_CHECK_EXC(adapter.launchKernels(kernels[kIdx],
-                                                                            stream,
-                                                                            warmupStartEvents[i],
-                                                                            warmupStopEvents[i]));
-                                    else
-                                        HIP_CHECK_EXC(adapter.launchKernels(
-                                            kernels[kIdx], stream, nullptr, nullptr));
-                                    listeners.postWarmup();
+                                    HIP_CHECK_EXC(adapter.launchKernels(kernels[kIdx],
+                                                                        stream,
+                                                                        warmupStartEvents[i],
+                                                                        warmupStopEvents[i]));
                                     // Do validation after first warmup
                                     if(i == 0)
                                         listeners.validateWarmups(
                                             inputs, warmupStartEvents, warmupStopEvents);
                                 }
+                                listeners.postWarmup(warmupStartEvents, warmupStopEvents, stream);
 
-                                size_t syncs = listeners.numSyncs();
-                                size_t enq   = listeners.numEnqueuesPerSync();
+                                size_t syncs      = listeners.numSyncs();
+                                size_t enq        = listeners.numEnqueuesPerSync();
+                                size_t eventCount = gpuTimer ? kernels[0].size() : 0;
 
                                 listeners.preSyncs();
-
-                                for(int i = 0; i < syncs; i++)
-                                {
-                                    TimingEvents startEvents(enq, eventCount);
-                                    TimingEvents stopEvents(enq, eventCount);
-
-                                    listeners.preEnqueues(stream);
-
-                                    for(int j = 0; j < enq; j++)
+                                if(enq)
+                                    for(int i = 0; i < syncs; i++)
                                     {
-                                        size_t kIdx = ((i * enq) + j) % kernels.size();
-                                        HIP_CHECK_EXC(adapter.launchKernels(
-                                            kernels[kIdx], stream, nullptr, nullptr));
+                                        TimingEvents startEvents(enq, eventCount);
+                                        TimingEvents stopEvents(enq, eventCount);
 
-                                        if(icacheFlush)
+                                        listeners.preEnqueues(stream);
+
+                                        for(int j = 0; j < enq; j++)
                                         {
-                                            hipLaunchKernelGGL(
-                                                flush_icache, flushGridSize, 64, 0, stream);
-                                        }
-                                    }
+                                            size_t kIdx = ((i * enq) + j) % kernels.size();
+                                            HIP_CHECK_EXC(adapter.launchKernels(
+                                                kernels[kIdx], stream, nullptr, nullptr));
 
-                                    listeners.postEnqueues(startEvents, stopEvents, stream);
-                                    listeners.validateEnqueues(inputs, startEvents, stopEvents);
-                                }
+                                            if(icacheFlush)
+                                            {
+                                                hipLaunchKernelGGL(
+                                                    flush_icache, flushGridSize, 64, 0, stream);
+                                            }
+                                        }
+
+                                        listeners.postEnqueues(startEvents, stopEvents, stream);
+                                        listeners.validateEnqueues(inputs, startEvents, stopEvents);
+                                    }
 
                                 listeners.postSyncs();
 

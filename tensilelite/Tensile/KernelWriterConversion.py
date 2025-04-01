@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -22,15 +22,19 @@
 #
 ################################################################################
 
+from typing import Dict
 from copy import deepcopy
+from typing import List
 
-from .Common import globalParameters, CHeader, gfxArch, getGfxName
 from .KernelWriterBase import KernelWriterBase
 from .TensileInstructions import DataType
 
+from Tensile.Common.Architectures import isaToGfx
+from Tensile.Common import INDEX_CHARS, IsaInfo
+
 class KernelWriterConversion(KernelWriterBase):
 
-  def __init__(self, state, load_vw):
+  def __init__(self, state, load_vw, supportedArchs: List[tuple], isaInfoMap: Dict[str, IsaInfo]):
     super().__init__()
 
     self.state["ProblemType"] = deepcopy(state["ProblemType"])
@@ -49,9 +53,22 @@ class KernelWriterConversion(KernelWriterBase):
     # setup load vector width
     self.num_elements_load = load_vw
 
+    # Macro guards for f8 types
+    # For now, it is enough to check dest type to determine if we are using f8 types
+    # May need to include checks for input data type in the future.
+    self.f8MacroGuardStart = "";
+    self.f8MacroGuardEnd   = "";
+    if (self.state["ProblemType"]["DestDataType"].isFloat8() or self.state["ProblemType"]["DestDataType"].isBFloat8()):
+      self.f8MacroGuardStart = "\n#if TENSILELITE_FP8_TYPE_OCP\n"
+      self.f8MacroGuardEnd   = "\n#endif // F8 macro guard\n"
+    if (self.state["ProblemType"]["DestDataType"].isFloat8_fnuz() or self.state["ProblemType"]["DestDataType"].isBFloat8_fnuz()):
+      self.f8MacroGuardStart = "\n#if TENSILELITE_FP8_TYPE_FNUZ\n"
+      self.f8MacroGuardEnd   = "\n#endif // F8 macro guard\n"
+
     # derive parameter
     self.language = "HIP"
     self.kernelName = self.getKernelName()
+    self.isaInfoMap = isaInfoMap
     self.datatype = self.state["ProblemType"]["ComputeDataType"].toDevice(self.language)
     self.int32Str = DataType('int32').toDevice(self.language)
     if self.state["ProblemType"]["DataType"].isInt8() and self.state["ProblemType"]["ComputeDataType"].isSingle() and self.state["ProblemType"]["HighPrecisionAccumulate"]:
@@ -59,23 +76,15 @@ class KernelWriterConversion(KernelWriterBase):
 
     # determine chars for fast access
     self.indexChars = []
-    for i in range(0, len(globalParameters["IndexChars"])):
-      self.indexChars.append(globalParameters["IndexChars"][i])
+    for i in range(0, len(INDEX_CHARS)):
+      self.indexChars.append(INDEX_CHARS[i])
     self.indexChars[self.state["ProblemType"]["Index0"]] = "0" + self.indexChars[self.state["ProblemType"]["Index0"]]
     self.indexChars[self.state["ProblemType"]["Index1"]] = "1" + self.indexChars[self.state["ProblemType"]["Index1"]]
     self.tileChar0 = self.indexChars[self.state["ProblemType"]["Index0"]]
     self.tileChar1 = self.indexChars[self.state["ProblemType"]["Index1"]]
 
     # Get supported archs
-    if ";" in globalParameters["Architecture"]:
-      self.supportedArchs = globalParameters["Architecture"].split(";")
-    else:
-      self.supportedArchs = globalParameters["Architecture"].split("_")
-    if "all" in self.supportedArchs:
-      self.supportedArchs = deepcopy(globalParameters['SupportedISA'])
-    else:
-      for idx, arch in enumerate(self.supportedArchs):
-        self.supportedArchs[idx] = gfxArch(''.join(map(str, arch)))
+    self.supportedArchs = supportedArchs
 
     self.gsuKernels = [self.state["GlobalSplitU"]]
     if self.state["GenPGRPostKernels"]:
@@ -126,10 +135,13 @@ class KernelWriterConversion(KernelWriterBase):
       kStr += "  " + scalePtrStr + " * " + "ScaleC;" + self.endLine
       kStr += "  " + scalePtrStr + " * " + "ScaleD;" + self.endLine
 
+    enableFactorDim = False
     # interface: ScaleAlphaVec GSU>1 GSUA "MUL"
     if self.state["ProblemType"]["UseScaleAlphaVec"]:
       scaleAlphaVecPtrStr = self.state["ProblemType"]["ComputeDataType"].toDevice(self.language)
       kStr += "  " + scaleAlphaVecPtrStr + " * " + "ScaleAlphaVec;" + self.endLine
+      if self.state["ProblemType"]["UseScaleAlphaVec"] == 3:
+        enableFactorDim = True
 
     # alpha & beta
     kStr += "  %s alpha;%s" % (self.state["ProblemType"]["ComputeDataType"].toDevice(self.language), self.endLine)
@@ -141,7 +153,7 @@ class KernelWriterConversion(KernelWriterBase):
     if ((self.state["ProblemType"]["ActivationType"] != 'none') and self.state["ActivationFused"]):
       for name in self.state["ProblemType"]["ActivationType"].getAdditionalArgStringList():
         kStr += "  %s %s;%s" % (self.state["ProblemType"]["ActivationComputeDataType"].toDevice(self.language), name, self.endLine)
-      if self.state["ProblemType"]["ActivationType"] == 'all':
+      if self.state["ProblemType"]["ActivationType"] in ['all', 'hipblaslt_all']:
         kStr += "  %s activationType;%s" % (enumName, self.endLine)
 
     # strides
@@ -163,6 +175,8 @@ class KernelWriterConversion(KernelWriterBase):
         (not self.state["ProblemType"]["Gradient"] or \
           (self.state["ProblemType"]["Gradient"] and (self.state["ProblemType"]["BiasSrc"] == "A" or self.state["ProblemType"]["BiasSrc"] == "B"))):
       kStr += "  unsigned int strideBias;%s" % (self.endLine)
+      if self.state["ProblemType"]["UseBias"] == 3:
+        enableFactorDim = True
 
     # sizes
     for i in range(0, self.state["ProblemType"]["NumIndicesC"]):
@@ -170,14 +184,10 @@ class KernelWriterConversion(KernelWriterBase):
         kStr += "  unsigned int size%s;%s" % (self.indexChars[i], self.endLine)
       else:
         kStr += "  unsigned int size%s;%s" % (self.indexChars[i], self.endLine)
-    kStr += "  unsigned char gsu;%s" % (self.endLine)
-    kStr += "  unsigned char reserved[3];%s" % (self.endLine)
+    kStr += "  unsigned int gsu;%s" % (self.endLine)
 
-    if self.state["ProblemType"]["UseBias"] and \
-        (not self.state["ProblemType"]["Gradient"] or \
-          (self.state["ProblemType"]["Gradient"] and (self.state["ProblemType"]["BiasSrc"] == "A" or self.state["ProblemType"]["BiasSrc"] == "B"))):
-      if self.state["ProblemType"]["UseBias"] == 3:
-        kStr += "  unsigned int biasDim;%s" % (self.endLine)
+    if enableFactorDim:
+      kStr += "  unsigned int factorDim;%s" % (self.endLine)
 
     # argument structure end
     kStr += "};" + self.endLine
@@ -416,7 +426,7 @@ class KernelWriterConversion(KernelWriterBase):
       id_str = "id0"
       if self.state["ProblemType"]["UseBias"] == 3:
         id_str = "idb"
-        kStr += "  %s idb = ( arg.biasDim == 0 ? (%s)id0 : id1);%s" % (self.uint64Str, self.uint64Str, self.endLine)
+        kStr += "  %s idb = ( arg.factorDim == 0 ? (%s)id0 : id1);%s" % (self.uint64Str, self.uint64Str, self.endLine)
       elif self.state["ProblemType"]["UseBias"] == 2:
         id_str = "id1"
       if problemType["NumIndicesC"] > 2:
@@ -445,7 +455,7 @@ class KernelWriterConversion(KernelWriterBase):
     kStr += "  " + destTypeStr + " result[NUM_ELEMENT_LOAD];" + self.endLine
 
     #Load scaleAB
-    if self.state["ProblemType"]["UseScaleAB"]:
+    if self.state["ProblemType"]["UseScaleAB"] == "Scalar":
       kStr += "  " + intermediateDataType + " scaleA_data, scaleB_data;" + self.endLine
       kStr += "  " + "scaleA_data = arg.ScaleA == nullptr ? 1 : *(arg.ScaleA);" + self.endLine
       kStr += "  " + "scaleB_data = arg.ScaleB == nullptr ? 1 : *(arg.ScaleB);" + self.endLine
@@ -461,7 +471,7 @@ class KernelWriterConversion(KernelWriterBase):
       kStr += "  auto idxW_ori = idxW;%s"%self.endLine
 
     typeStr = "int" if self.state["ProblemType"]["DataType"].isInt8() or self.state["ProblemType"]["DataType"].isInt32() else ("double" if self.state["ProblemType"]["DataType"].isDouble() else "float")
-    typeStr2 = "int16_t" if self.state["ProblemType"]["DestDataType"].isInt8() else ("tensile_half" if self.state["ProblemType"]["DestDataType"].isFloat8() else "tensile_bfloat16")
+    typeStr2 = "int16_t" if self.state["ProblemType"]["DestDataType"].isInt8() else ("tensile_half" if self.state["ProblemType"]["DestDataType"].isAnyFloat8() else "tensile_bfloat16")
     loadTypeStr = "%s%s" % (typeStr, "" if self.num_dword_load == 1 else self.num_dword_load)
     storeTypeStr = "%s%s" % (typeStr, self.num_dword_store) if self.num_dword_store >= 1 else typeStr2 if self.num_dword_store == 0.5 else destTypeStr
 
@@ -518,15 +528,14 @@ class KernelWriterConversion(KernelWriterBase):
           if self.num_dword_load > 2:
             kStr += "  float2 accumVec2(accum[2], accum[3]);" + self.endLine
       canPKF32Arch = []
-      for arch in self.supportedArchs:
-        archTuple = tuple(arch)
-        if globalParameters["AsmCaps"][archTuple]['v_pk_add_f32']:
-          canPKF32Arch.append(arch)
+      for isa in self.supportedArchs:
+        if self.isaInfoMap[isa].asmCaps['v_pk_add_f32']: 
+          canPKF32Arch.append(isa)
       defineStr = []
       if len(canPKF32Arch) > 0:
-        defineStr = "#if defined(__%s__)"%getGfxName(canPKF32Arch[0])
+        defineStr = "#if defined(__%s__)"%isaToGfx(canPKF32Arch[0])
         for arch in canPKF32Arch[1:]:
-          defineStr += "|| defined(__%s__)"%getGfxName(arch)
+          defineStr += "|| defined(__%s__)"%isaToGfx(arch)
       else:
         defineStr = "#if 0"
       # PGR=2
@@ -613,9 +622,19 @@ class KernelWriterConversion(KernelWriterBase):
     resultStr = "result"
 
     #scaleAB
-    if self.state["ProblemType"]["UseScaleAB"]:
+    if self.state["ProblemType"]["UseScaleAB"] == "Scalar":
       kStr += "  arg.alpha = arg.alpha*scaleA_data*scaleB_data;%s" % (self.endLine)
-    kStr += self.endLine
+      kStr += self.endLine
+    elif self.state["ProblemType"]["UseScaleAB"] == "Vector":
+      kStr += "  if(arg.ScaleA != nullptr) {" + self.endLine
+      for vIdx in range(self.num_dword_load):
+        kStr += "    %s[%d] *= (%s)arg.ScaleA[id0+%d];%s" % (accumStr, vIdx, intermediateDataType, vIdx, self.endLine)
+      kStr += "  }" + self.endLine
+      kStr += "  if(arg.ScaleB != nullptr) {" + self.endLine
+      for vIdx in range(self.num_dword_load):
+        kStr += "      %s[%d] *= (%s)arg.ScaleB[id1];%s" % (accumStr, vIdx, intermediateDataType, self.endLine)
+      kStr += "  }" + self.endLine
+      kStr += self.endLine
 
     #alpha
     for vIdx in range(self.num_dword_load):
@@ -624,9 +643,25 @@ class KernelWriterConversion(KernelWriterBase):
 
     if self.state["ProblemType"]["UseScaleAlphaVec"]:
       kStr += "  if(arg.ScaleAlphaVec != nullptr){" + self.endLine
-      for vIdx in range(self.num_dword_load):
-        kStr += "  %s[%d] *= (%s)arg.ScaleAlphaVec[id0+%d];%s" % (accumStr, vIdx, intermediateDataType, vIdx, self.endLine)
-      kStr += "  }" + self.endLine
+
+      if self.state["ProblemType"]["UseScaleAlphaVec"] == 3:
+        kStr += "    if(arg.factorDim == 0){" + self.endLine
+        for vIdx in range(self.num_dword_load):
+          kStr += "      %s[%d] *= (%s)arg.ScaleAlphaVec[id0+%d];%s" % (accumStr, vIdx, intermediateDataType, vIdx, self.endLine)
+        kStr += "    }else{" + self.endLine
+        for vIdx in range(self.num_dword_load):
+          kStr += "      %s[%d] *= (%s)arg.ScaleAlphaVec[id1];%s" % (accumStr, vIdx, intermediateDataType, self.endLine)
+        kStr += "    }" + self.endLine
+        kStr += "  }" + self.endLine
+      elif self.state["ProblemType"]["UseBias"] == 2:
+        for vIdx in range(self.num_dword_load):
+          kStr += "    %s[%d] *= (%s)arg.ScaleAlphaVec[id1];%s" % (accumStr, vIdx, intermediateDataType, self.endLine)
+        kStr += "  }" + self.endLine
+      else:
+        for vIdx in range(self.num_dword_load):
+          kStr += "    %s[%d] *= (%s)arg.ScaleAlphaVec[id0+%d];%s" % (accumStr, vIdx, intermediateDataType, vIdx, self.endLine)
+        kStr += "  }" + self.endLine
+
       kStr += self.endLine
 
     #scaleC
@@ -645,7 +680,7 @@ class KernelWriterConversion(KernelWriterBase):
     if self.state["ProblemType"]["UseBias"] and (not self.state["ProblemType"]["Gradient"]):
       kStr += "  if(arg.Bias != 0){" + self.endLine
       if self.state["ProblemType"]["UseBias"] == 3:
-        kStr += "    if(arg.biasDim == 0){" + self.endLine
+        kStr += "    if(arg.factorDim == 0){" + self.endLine
         for vIdx in range(self.num_dword_load):
           kStr += "      %s[%d] += (%s)arg.Bias[idxBias+%d];%s" % (accumStr, vIdx, intermediateDataType, vIdx, self.endLine)
         kStr += "    }else{" + self.endLine
@@ -693,7 +728,7 @@ class KernelWriterConversion(KernelWriterBase):
     if ((self.state["ProblemType"]["ActivationType"] != 'none') and self.state["ActivationFused"]):
       typeActivationStr = self.state["ProblemType"]["ActivationComputeDataType"].toDevice(self.language)
       actArgs = ""
-      if self.state["ProblemType"]["ActivationType"] == 'all':
+      if self.state["ProblemType"]["ActivationType"] in ['all', 'hipblaslt_all']:
         actArgs += ", arg.activationType"
       for args in self.state["ProblemType"]["ActivationType"].getAdditionalArgStringList():
         actArgs += (", " + "arg." + args)
@@ -751,7 +786,7 @@ class KernelWriterConversion(KernelWriterBase):
 
 
   def getKernelName(self):
-    indexChars = globalParameters["IndexChars"]
+    indexChars = INDEX_CHARS
     # C dimensions
     name = "C"
     for i in range(0, self.state["ProblemType"]["NumIndicesC"]):
@@ -774,8 +809,12 @@ class KernelWriterConversion(KernelWriterBase):
         name += "_BiasSrc%s"%(self.state["ProblemType"]["BiasSrc"])
       else:
         name += "_Bias%s"%self.state["ProblemType"]["BiasDataType"].toChar()
-        if self.state["ProblemType"]["UseBias"] > 1:
-          name += "_BD%s"%("N" if self.state["ProblemType"]["UseBias"] == 2 else "MN")
+
+    factorDim =  0 if self.state["ProblemType"]["Gradient"] else self.state["ProblemType"]["UseBias"]
+    factorDim =  max(factorDim, self.state["ProblemType"]["UseScaleAlphaVec"])
+    if factorDim > 1:
+        name += "_FD%s"%("N" if factorDim == 2 else "MN")
+
     if self.state["ProblemType"]["UseE"]:
       if self.state["ProblemType"]["Gradient"]:
         name += "_Grad%s"%self.state["ProblemType"]["DataTypeE"].toChar()
@@ -785,11 +824,16 @@ class KernelWriterConversion(KernelWriterBase):
     if ((self.state["ProblemType"]["ActivationType"] != 'none') and self.state["ActivationFused"]):
       if self.state["ProblemType"]["ActivationType"] == 'all':
         name += "_A"
+      elif self.state["ProblemType"]["ActivationType"] == 'hipblaslt_all':
+        name += "_HA"
       else:
         name += "_%s"%str(self.state["ProblemType"]["ActivationType"]).upper()
       name += self.state["ProblemType"]["ActivationComputeDataType"].toChar()
       name += ("ng" if self.state["ProblemType"]["ActivationNoGuard"] else "")
-    name += "_ScaleAB" if self.state["ProblemType"]["UseScaleAB"] else ""
+    if self.state["ProblemType"]["UseScaleAB"] == "Scalar":
+      name += "_ScaleAB"
+    elif self.state["ProblemType"]["UseScaleAB"] == "Vector":
+      name += "_ScaleABVec"
     name += "_ScaleCD" if self.state["ProblemType"]["UseScaleCD"] else ""
     name += "_ScaleAlphaVec" if self.state["ProblemType"]["UseScaleAlphaVec"] else ""
     name += "_PostGSU" + str(self.state["GlobalSplitU"])
@@ -800,22 +844,6 @@ class KernelWriterConversion(KernelWriterBase):
 
   def getHeaderFileString(self):
     fileString = "" # CHeader
-    if not globalParameters["MergeFiles"]:
-      fileString += CHeader
-      fileString += "#pragma once\n\n"
-      fileString += "\n"
-      fileString += "#include <KernelHeader.h>\n\n"
-      fileString += "#include <hip/hip_runtime.h>\n"
-      fileString += "#include <hip/hip_fp16.h>\n"
-      fileString += "\n"
-      activationCDataType = self.state["ProblemType"]["ActivationComputeDataType"]
-      if self.state["ProblemType"]["ActivationType"] == 'all':
-        fileString += "#include \"Tensile%sActivation%s_%s_%s.h\"\n"%(self.actGradientPrefix, \
-                                                                      self.gaurdStr, \
-                                                                      activationCDataType.toChar(), \
-                                                                      self.state["ProblemType"]["ActivationType"])
-      fileString += "\n"
-
     backupGSU    = self.state["GlobalSplitU"]
     backupUnroll = self.state["UnrollOnly"]
     for gsu in self.gsuKernels:
@@ -823,9 +851,11 @@ class KernelWriterConversion(KernelWriterBase):
         self.state["GlobalSplitU"] = gsu
         self.state["ProblemType"]["GroupedGemm"] = toggle
         self.kernelName = self.getKernelName()
+        fileString += self.f8MacroGuardStart
         fileString += self.functionArgument()
         fileString += self.functionSignature()
         fileString += ";\n"
+        fileString += self.f8MacroGuardEnd
       if not self.state["UnrollOnly"]:
         self.state["UnrollOnly"] = True
     self.state["GlobalSplitU"] = backupGSU
@@ -837,11 +867,6 @@ class KernelWriterConversion(KernelWriterBase):
 
   def getSourceFileString(self):
     fileString = ""
-    if not globalParameters["MergeFiles"]:
-      fileString += "\n"
-      fileString += "#include \"%s.h\"\n" % self.kernelName
-      fileString += "\n"
-
     backupGSU    = self.state["GlobalSplitU"]
     backupUnroll = self.state["UnrollOnly"]
     for gsu in self.gsuKernels:
@@ -849,8 +874,10 @@ class KernelWriterConversion(KernelWriterBase):
         self.state["GlobalSplitU"] = gsu
         self.state["ProblemType"]["GroupedGemm"] = toggle
         self.kernelName = self.getKernelName()
+        fileString += self.f8MacroGuardStart
         fileString += self.functionSignature()
         fileString += self.kernelBody()
+        fileString += self.f8MacroGuardEnd
       if not self.state["UnrollOnly"]:
         self.state["UnrollOnly"] = True
     self.state["GlobalSplitU"] = backupGSU

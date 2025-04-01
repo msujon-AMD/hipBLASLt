@@ -35,7 +35,7 @@
 #include <Tensile/DataTypes.hpp>
 #include <Tensile/Macros.hpp>
 
-namespace Tensile
+namespace TensileLite
 {
     template <typename T>
     class KernelArgumentsContainer
@@ -145,6 +145,9 @@ namespace Tensile
 
         template <typename T>
         void append(std::string const& name, T value);
+
+        template <typename T>
+        void appendAligned(std::string const& name, T value);
 
         template <typename T>
         void appendUnbound(std::string const& name);
@@ -348,10 +351,15 @@ namespace Tensile
     }
 
     template <typename T>
+    void KernelArguments::appendAligned(std::string const& name, T value)
+    {
+        alignTo(alignof(T));
+        append(name, value, true);
+    }
+
+    template <typename T>
     inline void KernelArguments::append(std::string const& name, T value, bool bound)
     {
-        // alignTo(alignof(T));
-
         size_t offset = m_data.size();
         size_t size   = sizeof(T);
 
@@ -481,4 +489,4 @@ namespace Tensile
     private:
         size_t counter = 0;
     };
-} // namespace Tensile
+} // namespace TensileLite

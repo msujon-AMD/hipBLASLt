@@ -28,10 +28,13 @@
 
 #include <cstdlib>
 #include <string>
+#ifdef Tensile_ENABLE_MARKER
+#include <roctracer/roctx.h>
+#endif
 
 #include <Tensile/Singleton.hpp>
 
-namespace Tensile
+namespace TensileLite
 {
     /**
  * @brief Common place for defining flags which enable debug behaviour.
@@ -70,7 +73,7 @@ namespace Tensile
 
         bool enableDebugSelection() const;
 
-        bool useExperimentalSelection() const;
+        int useExperimentalSelection() const;
 
         std::string getMetric() const;
 
@@ -78,9 +81,47 @@ namespace Tensile
 
         int getSolutionIndex() const;
 
+        bool getSolutionSelectionTrace() const;
+
         int getGridbasedTopSols() const;
 
+        bool printStreamKGridInfo() const;
+
         bool gridBasedKDTree() const;
+
+        bool gridBasedBatchExp() const;
+
+        __attribute__((always_inline)) inline void markerStart(const char* name) const
+        {
+#ifdef Tensile_ENABLE_MARKER
+            if(m_printMarker)
+            {
+                roctxRangePush(name);
+            }
+#endif
+        }
+
+        __attribute__((always_inline)) inline void markerStart(const char*        name,
+                                                               const std::string& objPath) const
+        {
+#ifdef Tensile_ENABLE_MARKER
+            if(m_printMarker)
+            {
+                std::string s = name + std::string(": ") + objPath;
+                roctxRangePush(s.c_str());
+            }
+#endif
+        }
+
+        __attribute__((always_inline)) inline void markerStop() const
+        {
+#ifdef Tensile_ENABLE_MARKER
+            if(m_printMarker)
+            {
+                roctxRangePop();
+            }
+#endif
+        }
 
     private:
         friend LazySingleton<Debug>;
@@ -89,13 +130,16 @@ namespace Tensile
         int         m_value2;
         bool        m_naivePropertySearch = false;
         bool        m_debugSelection      = false;
-        bool        m_experimentSelection = false;
+        int         m_experimentSelection = 0;
         int         m_solution_index      = -1;
+        bool        m_solselTrace         = false;
         std::string m_metric              = "";
         int         m_gridbasedTopSols    = 1;
         bool        m_benchmark           = false;
         bool        m_gridbasedKdTree     = false;
+        bool        m_gridbasedBatchExp   = false;
+        bool        m_printMarker         = false;
 
         Debug();
     };
-} // namespace Tensile
+} // namespace TensileLite

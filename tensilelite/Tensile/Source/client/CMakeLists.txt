@@ -33,6 +33,7 @@ set(client_sources
     source/MetaRunListener.cpp
     source/PerformanceReporter.cpp
     source/ProgressListener.cpp
+    source/Rotating.cpp
     source/Reference.cpp
     source/ReferenceValidator.cpp
     source/ResultFileReporter.cpp
@@ -42,13 +43,13 @@ set(client_sources
     source/TypedId.cpp
     )
 
-find_package(Boost  COMPONENTS program_options filesystem REQUIRED)
+find_package(Boost COMPONENTS program_options filesystem REQUIRED)
 
 add_library(TensileClient STATIC ${client_sources})
 
 set_target_properties(TensileClient
                       PROPERTIES
-                      CXX_STANDARD 20
+                      CXX_STANDARD 17
                       CXX_STANDARD_REQUIRED ON
                       CXX_EXTENSIONS OFF)
 
@@ -60,7 +61,12 @@ endif()
 
 target_include_directories(TensileClient PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")# "${rocm_smi_root}/include")
 
-target_link_libraries(TensileClient PRIVATE TensileHost ${Boost_LIBRARIES} rocm_smi)
+target_link_libraries(TensileClient PRIVATE TensileHost Boost::program_options Boost::filesystem rocm_smi)
+
+if(Tensile_ENABLE_MARKER)
+    target_link_libraries(TensileClient PRIVATE -lroctx64)
+endif()
+
 if(TENSILE_USE_OPENMP)
     target_link_libraries(TensileClient PRIVATE custom_openmp_cxx)
 endif()
@@ -68,7 +74,7 @@ endif()
 add_executable(tensile_client main.cpp)
 set_target_properties(tensile_client
                       PROPERTIES
-                      CXX_STANDARD 20
+                      CXX_STANDARD 17
                       CXX_STANDARD_REQUIRED ON
                       CXX_EXTENSIONS OFF)
 

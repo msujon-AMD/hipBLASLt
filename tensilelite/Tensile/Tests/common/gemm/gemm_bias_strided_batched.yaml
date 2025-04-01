@@ -1,5 +1,5 @@
 TestParameters:
-  marks: [skip-gfx940, skip-gfx941, skip-gfx942, skip-gfx1100, skip-gfx1101, skip-gfx1102] # not supported by arch
+  marks: [skip-gfx940, skip-gfx941, skip-gfx942, skip-gfx950, skip-gfx1100, skip-gfx1101, skip-gfx1102, skip-gfx1200, skip-gfx1201] # not supported by arch
 
 GlobalParameters:
   NumElementsToValidate: -1
@@ -31,6 +31,7 @@ BenchmarkProblems:
       UseBias: 1
       Batched: True
       Activation: True
+      ActivationType: hipblaslt_all
       SetConstStrideBias: [[2, -1]] #set bias stride = -1, strides will be set to M
 
     - # BenchmarkProblemSizeGroup - Standard
@@ -78,6 +79,7 @@ BenchmarkProblems:
         - ActivationArgs:
           - [Enum: none]
           - [Enum: relu]
+          - [Enum: silu]
 
   #######################################
   # TN - standard
@@ -95,6 +97,7 @@ BenchmarkProblems:
       UseBias: 1
       Batched: True
       Activation: True
+      ActivationType: all
       SetConstStrideBias: [[2, -1]]
 
     - # BenchmarkProblemSizeGroup - Standard
@@ -142,6 +145,7 @@ BenchmarkProblems:
         - ActivationArgs:
           - [Enum: none]
           - [Enum: relu]
+          - [Enum: silu]
 
   #######################################
   # NN - standard
@@ -159,6 +163,7 @@ BenchmarkProblems:
       UseBias: 1
       Batched: True
       Activation: True
+      ActivationType: all
       SetConstStrideBias: [[2, -1]]
 
     - # BenchmarkProblemSizeGroup - Standard
@@ -206,6 +211,7 @@ BenchmarkProblems:
         - ActivationArgs:
           - [Enum: none]
           - [Enum: relu]
+          - [Enum: silu]
 
   #######################################
   # TN - standard
@@ -223,6 +229,7 @@ BenchmarkProblems:
       UseBias: 1
       Batched: True
       Activation: True
+      ActivationType: all
       SetConstStrideBias: [[2, -1]]
 
     - # BenchmarkProblemSizeGroup - Standard
@@ -270,6 +277,7 @@ BenchmarkProblems:
         - ActivationArgs:
           - [Enum: none]
           - [Enum: relu]
+          - [Enum: silu]
 
   #######################################
   # NN - standard
@@ -287,6 +295,7 @@ BenchmarkProblems:
       UseBias: 1
       Batched: True
       Activation: True
+      ActivationType: all
       SetConstStrideBias: [[2, -1]]
 
     - # BenchmarkProblemSizeGroup - Standard
@@ -334,6 +343,7 @@ BenchmarkProblems:
         - ActivationArgs:
           - [Enum: none]
           - [Enum: relu]
+          - [Enum: silu]
 
   #######################################
   # TN - standard
@@ -351,6 +361,7 @@ BenchmarkProblems:
       UseBias: 1
       Batched: True
       Activation: True
+      ActivationType: all
       SetConstStrideBias: [[2, -1]]
 
     - # BenchmarkProblemSizeGroup - Standard
@@ -398,6 +409,7 @@ BenchmarkProblems:
         - ActivationArgs:
           - [Enum: none]
           - [Enum: relu]
+          - [Enum: silu]
 
   #######################################
   # NN - standard
@@ -415,6 +427,7 @@ BenchmarkProblems:
       UseBias: 1
       Batched: True
       Activation: True
+      ActivationType: all
       SetConstStrideBias: [[2, -1]]
 
     - # BenchmarkProblemSizeGroup - Standard
@@ -462,6 +475,7 @@ BenchmarkProblems:
         - ActivationArgs:
           - [Enum: none]
           - [Enum: relu]
+          - [Enum: silu]
 
   #######################################
   # TN - standard
@@ -479,6 +493,7 @@ BenchmarkProblems:
       UseBias: 1
       Batched: True
       Activation: True
+      ActivationType: all
       SetConstStrideBias: [[2, -1]]
 
     - # BenchmarkProblemSizeGroup - Standard
@@ -526,6 +541,7 @@ BenchmarkProblems:
         - ActivationArgs:
           - [Enum: none]
           - [Enum: relu]
+          - [Enum: silu]
 
 
   #######################################
@@ -544,6 +560,7 @@ BenchmarkProblems:
       UseBias: 1
       Batched: True
       Activation: True
+      ActivationType: all
       SetConstStrideBias: [[2, -1]]
       BiasDataTypeList: ['s']
 
@@ -592,6 +609,7 @@ BenchmarkProblems:
         - ActivationArgs:
           - [Enum: none]
           - [Enum: relu]
+          - [Enum: silu]
 
   #######################################
   # TN - standard
@@ -609,6 +627,7 @@ BenchmarkProblems:
       UseBias: 1
       Batched: True
       Activation: True
+      ActivationType: all
       SetConstStrideBias: [[2, -1]]
       BiasDataTypeList: ['s']
 
@@ -657,3 +676,4 @@ BenchmarkProblems:
         - ActivationArgs:
           - [Enum: none]
           - [Enum: relu]
+          - [Enum: silu]

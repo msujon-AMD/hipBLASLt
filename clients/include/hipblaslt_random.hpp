@@ -124,6 +124,7 @@ public:
         return random_nan_data<hip_bfloat16, uint16_t, 7, 8>();
     }
 
+#if HIPBLASLT_FP8_TYPE_FNUZ
     // Single NaN float8...
     explicit operator hipblaslt_f8_fnuz()
     {
@@ -147,6 +148,33 @@ public:
         x.bits = 0x80;
         return x.value;
     }
+#endif
+
+#if HIPBLASLT_FP8_TYPE_OCP
+    // Positive NaN float8...
+    explicit operator hipblaslt_f8()
+    {
+        union
+        {
+            uint8_t      bits;
+            hipblaslt_f8 value;
+        } x;
+        x.bits = 0x7f;
+        return x.value;
+    }
+
+    // Single NaN bfloat8...
+    explicit operator hipblaslt_bf8()
+    {
+        union
+        {
+            uint8_t       bits;
+            hipblaslt_bf8 value;
+        } x;
+        x.bits = 0x7e;
+        return x.value;
+    }
+#endif
 };
 
 /* ============================================================================================ */
@@ -164,8 +192,9 @@ public:
     template <typename T, std::enable_if_t<std::is_integral<T>{}, int> = 0>
     explicit operator T()
     {
-        return rand2() ? std::numeric_limits<T>::min : std::numeric_limits<T>::max;
+        return rand2() ? std::numeric_limits<T>::min() : std::numeric_limits<T>::max();
     }
+
     // Random float
     template <typename T, std::enable_if_t<!std::is_integral<T>{}, int> = 0>
     explicit operator T()
@@ -354,4 +383,54 @@ inline std::string random_string(size_t n)
                 std::uniform_int_distribution<unsigned short>(0x20, 0x7E)(t_hipblaslt_rng)));
     }
     return str;
+}
+
+/* ============================================================================================ */
+/*! \brief  Random number generator which generates random values in normal distribution N(0,1) */
+namespace hipblaslt_norm_dist {
+    // XORWOW state structure
+    struct XorwowState {
+        unsigned int x[5];
+        unsigned int counter;
+    };
+
+    // Device function to initialize XORWOW state
+    __device__ void init_xorwow(XorwowState* state, unsigned int seed) {
+        unsigned int s = seed;
+        for (int i = 0; i < 5; ++i) {
+            s = s * 69069 + (i + 1); // Scramble seed
+            state->x[i] = s;
+        }
+        state->counter = seed ^ 362437;
+    }
+
+    // Device function for XORWOW RNG
+    __device__ unsigned int xorwow_rand(XorwowState* state) {
+        unsigned int t = state->x[4];
+        unsigned int s = state->x[0];
+        state->x[4] = state->x[3];
+        state->x[3] = state->x[2];
+        state->x[2] = state->x[1];
+        state->x[1] = s;
+        t ^= t >> 2;
+        t ^= t << 1;
+        state->x[0] = t ^ s ^ (s << 4);
+        state->counter += 362437;
+        return state->x[0] + state->counter;
+    }
+
+    // Device function for uniform distribution
+    __device__ float xorwow_uniform(XorwowState* state) {
+        return xorwow_rand(state) / 4294967296.0f;
+    }
+
+    // Device function for Box-Muller normal distribution
+    __device__ float box_muller_normal(XorwowState* state) {
+        float u1 = xorwow_uniform(state);
+        float u2 = xorwow_uniform(state);
+        if (u1 < 1e-10f) u1 = 1e-10f;
+        float r = sqrtf(-2.0f * logf(u1));
+        float theta = 2.0f * 3.1415926535f * u2;
+        return r * cosf(theta);
+    }
 }

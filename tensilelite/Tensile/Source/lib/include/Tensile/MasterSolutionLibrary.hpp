@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,7 +34,7 @@
 #include <Tensile/SolutionLibrary.hpp>
 #include <Tensile/Tensile.hpp>
 
-namespace Tensile
+namespace TensileLite
 {
 
     /**
@@ -103,18 +103,23 @@ namespace Tensile
             if(solution->requiredHostWorkspaceSizePerProblem == static_cast<size_t>(-1))
             {
                 solution->requiredHostWorkspaceSizePerProblem
-                    = solution->requiredHostSizeGroupedGemmSingle(problem);
+                    = solution->requiredHostSizeGroupedGemmSingle(problem, hardware);
             }
             return solution;
         }
 
-        virtual std::shared_ptr<MySolution> getSolutionByIndex(const int index) const override
+        virtual std::shared_ptr<MySolution> getSolutionByIndex(Hardware const& hardware,
+                                                               const int       index) const override
         {
             if(solutions.find(index) == solutions.end())
             {
                 return std::shared_ptr<MySolution>();
             }
-            auto solution = solutions.at(index);
+            auto       solution = solutions.at(index);
+            const bool streamK  = Debug::Instance().useExperimentalSelection() >= 1;
+            if(solution->isStreamK() && !streamK)
+                return std::shared_ptr<MySolution>();
+
             if(solution->requiredHostWorkspaceSizePerProblem == static_cast<size_t>(-1))
             {
                 auto problem
@@ -137,7 +142,7 @@ namespace Tensile
                                                       solution->problemType.groupedGemm,
                                                       std::numeric_limits<size_t>::max());
                 solution->requiredHostWorkspaceSizePerProblem
-                    = solution->requiredHostSizeGroupedGemmSingle(problem);
+                    = solution->requiredHostSizeGroupedGemmSingle(problem, hardware);
             }
             return solution;
         }
@@ -226,7 +231,19 @@ namespace Tensile
                                                             Hardware const&  hardware,
                                                             int numSolutions) const override
         {
-            return library->findTopSolutions(problem, hardware, numSolutions);
+            if(Debug::Instance().printSolutionSelectionTime())
+            {
+                auto start  = std::chrono::steady_clock::now();
+                auto result = library->findTopSolutions(problem, hardware, numSolutions);
+                auto end    = std::chrono::steady_clock::now();
+                double time = std::chrono::duration<double, std::micro>(end - start).count();
+                std::cout << "Solution selection time: " << time << " us" << std::endl;
+                return result;
+            }
+            else
+            {
+                return library->findTopSolutions(problem, hardware, numSolutions);
+            }
         }
 
         virtual SolutionVector<MySolution>
@@ -238,4 +255,4 @@ namespace Tensile
         }
     };
 
-} // namespace Tensile
+} // namespace TensileLite

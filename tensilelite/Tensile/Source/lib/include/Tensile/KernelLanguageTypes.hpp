@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,7 +32,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace Tensile
+namespace TensileLite
 {
     /**
  * \ingroup Tensile
@@ -85,8 +85,8 @@ namespace Tensile
 
         static void addInfoObject(KernelLanguageTypeInfo const& info);
 
-        static std::map<KernelLanguage, KernelLanguageTypeInfo> data;
-        static std::map<std::string, KernelLanguage>            typeNames;
+        static std::map<KernelLanguage, KernelLanguageTypeInfo>* getData();
+        static std::map<std::string, KernelLanguage>*            getTypeNames();
     };
 
     /**
@@ -133,14 +133,14 @@ namespace Tensile
     /**
  * @}
  */
-} // namespace Tensile
+} // namespace TensileLite
 
 namespace std
 {
     template <>
-    struct hash<Tensile::KernelLanguage>
+    struct hash<TensileLite::KernelLanguage>
     {
-        inline size_t operator()(Tensile::KernelLanguage const& val) const
+        inline size_t operator()(TensileLite::KernelLanguage const& val) const
         {
             return hash<int>()(static_cast<int>(val));
         }

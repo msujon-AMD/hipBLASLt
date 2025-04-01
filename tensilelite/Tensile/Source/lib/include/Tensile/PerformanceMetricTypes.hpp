@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,7 +32,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace Tensile
+namespace TensileLite
 {
     /**
  * \ingroup Tensile
@@ -47,6 +47,17 @@ namespace Tensile
  */
 
     /**
+ * Experimental options
+ */
+    enum class ExperimentalOption : int
+    {
+        None    = 0,
+        MLP     = 1,
+        StreamK = 2,
+        Count
+    };
+
+    /**
  * Performance Metric
  */
     enum class PerformanceMetric : int
@@ -54,7 +65,8 @@ namespace Tensile
         Auto,
         CUEfficiency,
         DeviceEfficiency,
-        Experimental,
+        ExperimentalMLP,
+        ExperimentalStreamK,
         Count
     };
 
@@ -86,8 +98,8 @@ namespace Tensile
 
         static void addInfoObject(PerformanceMetricTypeInfo const& info);
 
-        static std::map<PerformanceMetric, PerformanceMetricTypeInfo> data;
-        static std::map<std::string, PerformanceMetric>               typeNames;
+        static std::map<PerformanceMetric, PerformanceMetricTypeInfo>* getData();
+        static std::map<std::string, PerformanceMetric>*               getTypeNames();
     };
 
     /**
@@ -131,22 +143,27 @@ namespace Tensile
     {
     };
     template <>
-    struct PerformanceMetricInfo<PerformanceMetric::Experimental>
-        : public BasePerformanceMetricInfo<PerformanceMetric::Experimental>
+    struct PerformanceMetricInfo<PerformanceMetric::ExperimentalMLP>
+        : public BasePerformanceMetricInfo<PerformanceMetric::ExperimentalMLP>
+    {
+    };
+    template <>
+    struct PerformanceMetricInfo<PerformanceMetric::ExperimentalStreamK>
+        : public BasePerformanceMetricInfo<PerformanceMetric::ExperimentalStreamK>
     {
     };
 
     /**
  * @}
  */
-} // namespace Tensile
+} // namespace TensileLite
 
 namespace std
 {
     template <>
-    struct hash<Tensile::PerformanceMetric>
+    struct hash<TensileLite::PerformanceMetric>
     {
-        inline size_t operator()(Tensile::PerformanceMetric const& val) const
+        inline size_t operator()(TensileLite::PerformanceMetric const& val) const
         {
             return hash<int>()(static_cast<int>(val));
         }

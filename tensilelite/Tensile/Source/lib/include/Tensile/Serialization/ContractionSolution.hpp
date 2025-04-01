@@ -31,7 +31,7 @@
 #include <Tensile/ContractionSolution.hpp>
 #include <Tensile/Serialization/Base.hpp>
 
-namespace Tensile
+namespace TensileLite
 {
     namespace Serialization
     {
@@ -73,10 +73,10 @@ namespace Tensile
         };
 
         template <typename IO>
-        struct MappingTraits<ContractionSolution::SizeMapping, IO>
+        struct MappingTraits<SizeMapping, IO>
         {
             using iot = IOTraits<IO>;
-            static void mapping(IO& io, ContractionSolution::SizeMapping& s)
+            static void mapping(IO& io, SizeMapping& s)
             {
                 iot::mapRequired(io, "waveNum", s.waveNum);
 
@@ -100,6 +100,8 @@ namespace Tensile
                 iot::mapOptional(io, "packBatchDims", s.packBatchDims);
                 iot::mapOptional(io, "packSummationDims", s.packSummationDims);
                 iot::mapOptional(io, "magicDivAlg", s.magicDivAlg);
+                iot::mapOptional(io, "streamK", s.streamK);
+                iot::mapOptional(io, "streamKAtomic", s.streamKAtomic);
                 iot::mapOptional(io, "persistentKernel", s.persistentKernel);
                 iot::mapOptional(io, "persistentKernelAlongBatch", s.persistentKernelAlongBatch);
                 iot::mapRequired(io, "sourceKernel", s.sourceKernel);
@@ -113,6 +115,12 @@ namespace Tensile
                 iot::mapOptional(io, "CustomKernelName", s.customKernelName);
 
                 iot::mapRequired(io, "workGroupMappingXCC", s.workGroupMappingXCC);
+                iot::mapRequired(io, "workGroupMappingXCCGroup", s.workGroupMappingXCCGroup);
+
+                iot::mapRequired(io, "globalSplitUCoalesced", s.globalSplitUCoalesced);
+                iot::mapRequired(io,
+                                 "globalSplitUWorkGroupMappingRoundRobin",
+                                 s.globalSplitUWorkGroupMappingRoundRobin);
             }
 
             const static bool flow = false;
@@ -124,6 +132,7 @@ namespace Tensile
             using iot = IOTraits<IO>;
             static void mapping(IO& io, ContractionSolution::InternalArgsSupport& s)
             {
+                iot::mapRequired(io, "version", s.version);
                 iot::mapRequired(io, "gsu", s.gsu);
                 iot::mapRequired(io, "wgm", s.wgm);
                 iot::mapRequired(io, "staggerU", s.staggerU);
@@ -157,6 +166,7 @@ namespace Tensile
                 iot::mapOptional(io, "useScaleAB", s.useScaleAB);
                 iot::mapOptional(io, "useScaleCD", s.useScaleCD);
                 iot::mapOptional(io, "useScaleAlphaVec", s.useScaleAlphaVec);
+                iot::mapOptional(io, "outputAmaxD", s.outputAmaxD);
                 iot::mapRequired(io, "highPrecisionAccumulate", s.highPrecisionAccumulate);
                 iot::mapOptional(io, "useInitialStridesAB", s.useInitialStridesAB);
                 iot::mapOptional(io, "useInitialStridesCD", s.useInitialStridesCD);
@@ -171,6 +181,8 @@ namespace Tensile
                 iot::mapOptional(io, "sparse", s.sparse);
                 iot::mapOptional(io, "f32XdlMathOp", s.f32XdlMathOp);
                 iot::mapOptional(io, "supportDeviceUserArguments", s.supportDeviceUserArguments);
+                iot::mapOptional(io, "swizzleTensorA", s.swizzleTensorA);
+                iot::mapOptional(io, "swizzleTensorB", s.swizzleTensorB);
             }
 
             const static bool flow = false;
@@ -205,4 +217,4 @@ namespace Tensile
             const static bool flow = false;
         };
     } // namespace Serialization
-} // namespace Tensile
+} // namespace TensileLite

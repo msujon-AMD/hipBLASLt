@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2022 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -72,21 +72,24 @@ endif()
 add_subdirectory("${Tensile_ROOT}/Source" "Tensile")
 include("${Tensile_ROOT}/Source/TensileCreateLibrary.cmake")
 
-# Output target: ${Tensile_VAR_PREFIX}_LIBRARY_TARGET. Ensures that the libs get built in Tensile_OUTPUT_PATH/library.
 function(TensileCreateLibraryFiles
          Tensile_LOGIC_PATH
          Tensile_OUTPUT_PATH
+         Tensile_LIBRARY_TARGET
          )
 
   # Boolean options
   set(options
-       MERGE_FILES
-       NO_MERGE_FILES
        SHORT_FILE_NAMES
        PRINT_DEBUG
        GENERATE_PACKAGE
        SEPARATE_ARCHITECTURES
-       LAZY_LIBRARY_LOADING
+       NO_LAZY_LIBRARY_LOADING
+       ASAN_BUILD
+       KEEP_BUILD_TMP
+       NO_COMPRESS
+       EXPERIMENTAL
+       ENABLE_MAKRER
        )
 
   # Single value settings
@@ -125,23 +128,28 @@ function(TensileCreateLibraryFiles
 
   message(STATUS "Tensile script: ${Script}")
 
-  # Older NO_MERGE_FILES flag overrides MERGE_FILES option.
-  if(Tensile_NO_MERGE_FILES)
-    set(Tensile_MERGE_FILES FALSE)
+  if(Tensile_NO_LAZY_LIBRARY_LOADING)
+    set(Options ${Options} "--no-lazy-library-loading")
   endif()
 
-  if(Tensile_MERGE_FILES)
-    set(Options ${Options} "--merge-files")
-  else()
-    set(Options ${Options} "--no-merge-files")
+  if(Tensile_ENABLE_MARKER)
+    set(Options ${Options} "--enable-marker")
   endif()
 
-  if(Tensile_SEPARATE_ARCHITECTURES)
-    set(Options ${Options} "--separate-architectures")
+  if(Tensile_KEEP_BUILD_TMP)
+    set(Options ${Options} "--keep-build-tmp")
   endif()
 
-  if(Tensile_LAZY_LIBRARY_LOADING)
-    set(Options ${Options} "--lazy-library-loading")
+  if(Tensile_NO_COMPRESS)
+    set(Options ${Options} "--no-compress")
+  endif()
+
+  if(Tensile_EXPERIMENTAL)
+    set(Options ${Options} "--experimental")
+  endif()
+
+  if(Tensile_ASAN_BUILD)
+    set(Options ${Options} "--address-sanitizer")
   endif()
 
   if(Tensile_GENERATE_PACKAGE)
@@ -150,14 +158,6 @@ function(TensileCreateLibraryFiles
 
   if(Tensile_SHORT_FILE_NAMES)
     set(Options ${Options} "--short-file-names")
-  else()
-    set(Options ${Options} "--no-short-file-names")
-  endif()
-
-  if(Tensile_PRINT_DEBUG)
-    set(Options ${Options} "--library-print-debug")
-  else()
-    set(Options ${Options} "--no-library-print-debug")
   endif()
 
   if(Tensile_EMBED_LIBRARY)
@@ -188,6 +188,10 @@ function(TensileCreateLibraryFiles
     set(Options ${Options} "--asm-debug")
   endif()
 
+  if(Tensile_LOGIC_FILTER)
+    set(Options ${Options} "--logic-filter=${Tensile_LOGIC_FILTER}")
+  endif()
+
   if(Tensile_LIBRARY_FORMAT)
     set(Options ${Options} "--library-format=${Tensile_LIBRARY_FORMAT}")
     if(Tensile_LIBRARY_FORMAT MATCHES "yaml")
@@ -205,28 +209,16 @@ function(TensileCreateLibraryFiles
     set(Options ${Options} "--build-id=${Tensile_BUILD_ID}")
   endif()
 
-  if (WIN32)
-    set(CommandLine ${VIRTUALENV_BIN_DIR}/${VIRTUALENV_PYTHON_EXENAME} ${Script} ${Options} ${Tensile_LOGIC_PATH} ${Tensile_OUTPUT_PATH} HIP)
-  else()
-    set(CommandLine ${Script} ${Options} ${Tensile_LOGIC_PATH} ${Tensile_OUTPUT_PATH} HIP)
-  endif()
+  set(CommandLine ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_BINARY_DIR}/lib -- ${VIRTUALENV_BIN_DIR}/${VIRTUALENV_PYTHON_EXENAME} ${Script} ${Options} ${Tensile_LOGIC_PATH} ${Tensile_OUTPUT_PATH} HIP)
   message(STATUS "Tensile_CREATE_COMMAND: ${CommandLine}")
 
   if(Tensile_EMBED_LIBRARY)
       set(Tensile_EMBED_LIBRARY_SOURCE "${Tensile_OUTPUT_PATH}/library/${Tensile_EMBED_LIBRARY}.cpp")
   endif()
 
-  if($ENV{TENSILE_SKIP_LIBRARY})
+  if(Tensile_SKIP_BUILD)
       message(STATUS "Skipping build of ${Tensile_OUTPUT_PATH}")
   else()
-
-      if(NOT Tensile_VAR_PREFIX)
-          set(Tensile_VAR_PREFIX TENSILE)
-      endif()
-
-      set(Tensile_MANIFEST_FILE_PATH "${Tensile_OUTPUT_PATH}/library/TensileManifest.txt")
-      message(STATUS "Tensile_MANIFEST_FILE_PATH: ${Tensile_MANIFEST_FILE_PATH}")
-
       if($ENV{ENABLE_ADDRESS_SANITIZER})
         # Must populate LD_PRELOAD with ASAN runtime if ASAN is being used.
         # Find the ASAN RT with compiler and update env for Tensile call.
@@ -240,14 +232,14 @@ function(TensileCreateLibraryFiles
 
       add_custom_command(
         COMMENT "Generating Tensile Libraries"
-        OUTPUT ${Tensile_EMBED_LIBRARY_SOURCE};${Tensile_MANIFEST_FILE_PATH}
+        OUTPUT ${Tensile_OUTPUT_PATH}/library
         COMMAND ${CommandLine}
       )
 
       add_custom_target(
-        "${Tensile_VAR_PREFIX}_LIBRARY_TARGET" ALL
-        COMMENT "${Tensile_VAR_PREFIX}_LIBRARY_TARGET"
-        DEPENDS ${Tensile_MANIFEST_FILE_PATH}
+        ${Tensile_LIBRARY_TARGET} ALL
+        COMMENT "${Tensile_LIBRARY_TARGET}"
+        DEPENDS ${Tensile_OUTPUT_PATH}/library
       )
 
   endif()
@@ -261,10 +253,10 @@ function(TensileCreateLibraryFiles
 
 endfunction()
 
-function(TensileCreateExtOpLibraries OutputFolder ArchStr)
+function(TensileCreateExtOpLibraries OutputFolder ArchStr TensileExt_LIBRARY_TARGET)
   string(REGEX MATCHALL "gfx[a-z0-9]+" Archs "${ArchStr}")
   list(REMOVE_DUPLICATES Archs)
-  set(build_tmp_dir ${CMAKE_CURRENT_BINARY_DIR}/build_tmp/ops)
+  set(build_tmp_dir ${OutputFolder}/../build_tmp/ops)
   set(Tensile_PACKAGE_DIR ${Tensile_SOURCE_DIR}/../)
   set(cwd "${Tensile_PACKAGE_DIR}/Ops")
   set(script "${cwd}/gen_assembly.sh")
@@ -278,12 +270,12 @@ function(TensileCreateExtOpLibraries OutputFolder ArchStr)
     COMMAND ${CMAKE_COMMAND} -E rm -rf ${build_tmp_dir}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${build_tmp_dir}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${OutputFolder}
-    COMMAND bash "${script}" "\"${Archs}\"" "${build_tmp_dir}" "${VIRTUALENV_HOME_DIR}" "${Tensile_BUILD_ID}"
+    COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_BINARY_DIR}/lib -- bash "${script}" "\"${Archs}\"" "${build_tmp_dir}" "${VIRTUALENV_HOME_DIR}" "${Tensile_BUILD_ID}"
     COMMAND ${CMAKE_COMMAND} -E copy ${ext_op_library_path} ${build_tmp_dir}/extop_*.co ${OutputFolder}
   )
 
   add_custom_target(
-    build_ext_op_library ALL
+    ${TensileExt_LIBRARY_TARGET} ALL
     WORKING_DIRECTORY "${cwd}"
     DEPENDS ${OutputFolder}/hipblasltExtOpLibrary.dat)
 

@@ -29,7 +29,7 @@
 
 #include <cstddef>
 
-namespace Tensile
+namespace TensileLite
 {
     namespace Client
     {
@@ -44,7 +44,7 @@ namespace Tensile
             , m_deterministicMode(args["deterministic-mode"].as<bool>())
             , m_cEqualsD(args["c-equal-d"].as<bool>())
             , m_biasTypeArgs(std::vector<DataType>(1, DataType::Float))
-            , m_biasDimArgs(std::vector<int>(1, 0))
+            , m_factorDimArgs(std::vector<int>(1, 0))
             , m_activationType(ActivationType::None)
             , m_activationNoGuard(false)
             , m_activationEnumArg(std::vector<ActivationType>(1, ActivationType::None))
@@ -52,7 +52,11 @@ namespace Tensile
             , m_f32XdlMathOp(DataType::Float)
             , m_activationComputeType(DataType::Float)
             , m_useUserArgs(false)
+            , m_swizzleTensorA(false)
+            , m_swizzleTensorB(false)
         {
+            using std::static_pointer_cast;
+
             std::vector<bool> isComplex;
             if(args.count("problem-identifier"))
             {
@@ -148,10 +152,13 @@ namespace Tensile
             if(args.count("use-gradient"))
                 m_useGradient = args["use-gradient"].as<bool>();
 
+            if(args.count("output-amaxD"))
+                m_outputAmaxD = args["output-amaxD"].as<bool>();
+
             if(args.count("bias-type-args"))
                 m_biasTypeArgs = args["bias-type-args"].as<std::vector<DataType>>();
-            if(args.count("bias-dim-args"))
-                m_biasDimArgs = args["bias-dim-args"].as<std::vector<int>>();
+            if(args.count("factor-dim-args"))
+                m_factorDimArgs = args["factor-dim-args"].as<std::vector<int>>();
             if(args.count("activation-type"))
                 m_activationType = args["activation-type"].as<ActivationType>();
             if(args.count("activation-no-guard"))
@@ -164,11 +171,11 @@ namespace Tensile
             if(args.count("bias-source"))
                 m_biasSrc = args["bias-source"].as<int>();
             if(args.count("use-scaleAB"))
-                m_useScaleAB = args["use-scaleAB"].as<bool>();
+                m_useScaleAB = args["use-scaleAB"].as<std::string>();
             if(args.count("use-scaleCD"))
                 m_useScaleCD = args["use-scaleCD"].as<bool>();
             if(args.count("use-scaleAlphaVec"))
-                m_useScaleAlphaVec = args["use-scaleAlphaVec"].as<bool>();
+                m_useScaleAlphaVec = args["use-scaleAlphaVec"].as<int>();
             if(args.count("max-workspace-size"))
                 m_maxWorkspaceSize = args["max-workspace-size"].as<size_t>();
 
@@ -181,6 +188,16 @@ namespace Tensile
             if(args.count("f32-xdl-math-op"))
             {
                 m_f32XdlMathOp = args["f32-xdl-math-op"].as<DataType>();
+            }
+
+            if(args.count("swizzle-tensor-a"))
+            {
+                m_swizzleTensorA = args["swizzle-tensor-a"].as<bool>();
+            }
+
+            if(args.count("swizzle-tensor-b"))
+            {
+                m_swizzleTensorB = args["swizzle-tensor-b"].as<bool>();
             }
 
             if(args.count("use-user-args"))
@@ -220,8 +237,9 @@ namespace Tensile
             rv.clear();
             int biasSize       = std::max(1, (int)m_biasTypeArgs.size());
             int activationSize = std::max(1, (int)m_activationEnumArg.size());
-            int biasDimSize    = std::max(1, m_useBias == 3 ? (int)m_biasDimArgs.size() : 1);
-            rv.reserve(m_problemSizes.size() * activationSize * biasSize * biasDimSize);
+            int factorDimSize  = std::max(
+                1, m_useScaleAlphaVec == 3 || m_useBias == 3 ? (int)m_factorDimArgs.size() : 1);
+            rv.reserve(m_problemSizes.size() * activationSize * biasSize * factorDimSize);
 
             std::vector<size_t> aStrides, bStrides, cStrides, dStrides, eStrides, biasStrides;
 
@@ -238,7 +256,7 @@ namespace Tensile
             if(m_tensorStrides[ContractionProblemGemm::TENSOR::BIAS].size() == 1)
                 biasStrides = m_tensorStrides[ContractionProblemGemm::TENSOR::BIAS][0];
 
-            for(int l = 0; l < biasDimSize; l++)
+            for(int l = 0; l < factorDimSize; l++)
             {
                 for(int k = 0; k < biasSize; k++)
                 {
@@ -247,24 +265,33 @@ namespace Tensile
                         for(int i = 0; i < m_problemSizes.size(); i++)
                         {
                             if(m_tensorStrides[ContractionProblemGemm::TENSOR::A].size()
-                            == m_problemSizes.size())
+                               == m_problemSizes.size())
                                 aStrides = m_tensorStrides[ContractionProblemGemm::TENSOR::A][i];
                             if(m_tensorStrides[ContractionProblemGemm::TENSOR::B].size()
-                            == m_problemSizes.size())
+                               == m_problemSizes.size())
                                 bStrides = m_tensorStrides[ContractionProblemGemm::TENSOR::B][i];
                             if(m_tensorStrides[ContractionProblemGemm::TENSOR::C].size()
-                            == m_problemSizes.size())
+                               == m_problemSizes.size())
                                 cStrides = m_tensorStrides[ContractionProblemGemm::TENSOR::C][i];
                             if(m_tensorStrides[ContractionProblemGemm::TENSOR::D].size()
-                            == m_problemSizes.size())
+                               == m_problemSizes.size())
                                 dStrides = m_tensorStrides[ContractionProblemGemm::TENSOR::D][i];
                             if(m_tensorStrides[ContractionProblemGemm::TENSOR::E].size()
-                            == m_problemSizes.size())
+                               == m_problemSizes.size())
                                 eStrides = m_tensorStrides[ContractionProblemGemm::TENSOR::E][i];
                             if(m_tensorStrides[ContractionProblemGemm::TENSOR::BIAS].size()
-                            == m_problemSizes.size())
-                                biasStrides = m_tensorStrides[ContractionProblemGemm::TENSOR::BIAS][i];
+                               == m_problemSizes.size())
+                                biasStrides
+                                    = m_tensorStrides[ContractionProblemGemm::TENSOR::BIAS][i];
 
+                            if(m_useBias && m_useScaleAlphaVec && m_useBias != m_useScaleAlphaVec)
+                                continue;
+
+                            int factorDim = (m_useScaleAlphaVec == 1 || m_useBias == 1)   ? 0
+                                            : (m_useScaleAlphaVec == 2 || m_useBias == 2) ? 1
+                                            : (m_useScaleAlphaVec == 3 || m_useBias == 3)
+                                                ? m_factorDimArgs[l]
+                                                : 0;
                             rv.push_back(ContractionProblemGemm::FromIndexSizes(
                                 m_freeIndices,
                                 m_batchIndices,
@@ -286,29 +313,31 @@ namespace Tensile
                             rv.back().setCEqualsD(m_cEqualsD);
                             rv.back().setAlphaType(
                                 m_constantTypes[ContractionProblemGemm::CONST::ALPHA]);
-                            rv.back().setBetaType(m_constantTypes[ContractionProblemGemm::CONST::BETA]);
+                            rv.back().setBetaType(
+                                m_constantTypes[ContractionProblemGemm::CONST::BETA]);
                             rv.back().setStridedBatched(m_stridedBatched);
                             rv.back().setHighPrecisionAccumulate(m_highPrecisionAccumulate);
                             rv.back().setUseGradient(m_useGradient);
                             rv.back().setUseBias(m_useBias);
                             rv.back().setUseE(m_useE);
+                            rv.back().setOutputAmaxD(m_outputAmaxD);
                             rv.back().setKernelLanguage(m_kernelLanguage);
                             rv.back().setPerformanceMetric(m_performanceMetric);
                             rv.back().setDeterministicMode(m_deterministicMode);
                             rv.back().setSparse(m_sparse);
                             rv.back().setActivationType(m_activationType);
                             rv.back().setWorkspaceSize(m_maxWorkspaceSize);
+                            rv.back().setSwizzleTensorA(m_swizzleTensorA);
+                            rv.back().setSwizzleTensorB(m_swizzleTensorB);
                             if(k < m_biasTypeArgs.size())
                             {
-                                auto length       = (m_biasSrc == ContractionProblemGemm::TENSOR::B)
-                                                        ? rv.back().d().sizes()[1]
-                                                        : (m_useBias == 1 || (m_biasSrc != ContractionProblemGemm::TENSOR::D))
-                                                        ? rv.back().d().sizes()[0]
-                                                        : (m_useBias == 2)
-                                                        ? rv.back().d().sizes()[1]
-                                                        : (m_useBias == 3)
-                                                        ? rv.back().d().sizes()[m_biasDimArgs[l]]
-                                                        : rv.back().d().sizes()[0];
+                                auto length
+                                    = (m_biasSrc == ContractionProblemGemm::TENSOR::B)
+                                          ? rv.back().d().sizes()[1]
+                                      : (m_useBias == 1
+                                         || (m_biasSrc != ContractionProblemGemm::TENSOR::D))
+                                          ? rv.back().d().sizes()[0]
+                                          : rv.back().d().sizes()[factorDim];
                                 bool isBiasOutput = m_useGradient ? true : false;
                                 auto biasStride   = biasStrides.size() < 2 ? 0 : biasStrides[2];
                                 rv.back().setBias(
@@ -317,7 +346,7 @@ namespace Tensile
                                     biasStride,
                                     isBiasOutput,
                                     static_cast<ContractionProblemGemm::TENSOR>(m_biasSrc),
-                                    m_useBias == 1 ? 0 : m_useBias == 2 ? 1 : m_biasDimArgs[l]);
+                                    factorDim);
                             }
                             else
                             {
@@ -333,6 +362,18 @@ namespace Tensile
                                                eStrides,
                                                isEOutput);
                             }
+                            if(m_outputAmaxD)
+                            {
+                                bool isOutput = true;
+                                rv.back().setAmaxD(
+                                    m_tensorTypes[ContractionProblemGemm::TENSOR::AMAXD], isOutput);
+                                rv.back().setSynchronizer(DataType::Int32, 1);
+                            }
+                            else
+                            {
+                                rv.back().setSynchronizer(
+                                    m_constantTypes[ContractionProblemGemm::CONST::ALPHA], 409600);
+                            }
                             if(j < m_activationEnumArg.size())
                             {
                                 rv.back().setParams().setActivationEnum(m_activationEnumArg[j]);
@@ -343,12 +384,21 @@ namespace Tensile
                             }
                             rv.back().setActivationNoGuard(m_activationNoGuard);
                             rv.back().setUseScaleAB(m_useScaleAB);
-                            if(m_useScaleAB)
+                            if(m_useScaleAB == "Scalar")
                             {
                                 rv.back().setScaleA(
-                                    m_constantTypes[ContractionProblemGemm::CONST::ALPHA]);
+                                    m_constantTypes[ContractionProblemGemm::CONST::ALPHA], 1);
                                 rv.back().setScaleB(
-                                    m_constantTypes[ContractionProblemGemm::CONST::ALPHA]);
+                                    m_constantTypes[ContractionProblemGemm::CONST::ALPHA], 1);
+                            }
+                            else if(m_useScaleAB == "Vector")
+                            {
+                                rv.back().setScaleA(
+                                    m_constantTypes[ContractionProblemGemm::CONST::ALPHA],
+                                    rv.back().d().sizes()[0]);
+                                rv.back().setScaleB(
+                                    m_constantTypes[ContractionProblemGemm::CONST::ALPHA],
+                                    rv.back().d().sizes()[1]);
                             }
                             rv.back().setUseScaleCD(m_useScaleCD);
                             if(m_useScaleCD)
@@ -361,12 +411,8 @@ namespace Tensile
                             rv.back().setUseScaleAlphaVec(m_useScaleAlphaVec);
                             rv.back().setScaleAlphaVec(
                                 m_constantTypes[ContractionProblemGemm::CONST::ALPHA],
-                                rv.back().d().sizes()[0]);
-
-                            rv.back().setSynchronizer(
-                            m_constantTypes[ContractionProblemGemm::CONST::ALPHA],
-                            40960);
-
+                                rv.back().d().sizes()[factorDim],
+                                factorDim);
                             rv.back().setGroupedGemm(m_groupedGemm);
                             rv.back().setF32XdlMathOp(m_f32XdlMathOp);
                             rv.back().setActivationComputeType(m_activationComputeType);
@@ -377,4 +423,4 @@ namespace Tensile
             }
         }
     } // namespace Client
-} // namespace Tensile
+} // namespace TensileLite

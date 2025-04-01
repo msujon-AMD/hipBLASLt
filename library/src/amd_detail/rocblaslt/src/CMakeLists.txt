@@ -1,5 +1,5 @@
 # ########################################################################
-# Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -22,7 +22,6 @@
 # ########################################################################
 
 # Set up Tensile Dependency
-if( BUILD_WITH_TENSILE )
   # If we want to build a shared rocblaslt lib, force Tensile to build as a static lib to absorb into rocblaslt
   if( BUILD_SHARED_LIBS )
     set( ROCBLASLT_SHARED_LIBS ON )
@@ -39,9 +38,6 @@ if( BUILD_WITH_TENSILE )
   set( PACKAGE_TENSILE_LIBRARY OFF )
 
   # Build options list
-  if(Tensile_MERGE_FILES)
-    set(Tensile_Options ${Tensile_Options} MERGE_FILES)
-  endif()
   if(Tensile_SHORT_FILENAMES)
     set(Tensile_Options ${Tensile_Options} SHORT_FILE_NAMES)
   endif()
@@ -51,11 +47,20 @@ if( BUILD_WITH_TENSILE )
   if(PACKAGE_TENSILE_LIBRARY)
     set(Tensile_Options ${Tensile_Options} GENERATE_PACKAGE)
   endif()
-  if(Tensile_SEPARATE_ARCHITECTURES)
-    set(Tensile_Options ${Tensile_Options} SEPARATE_ARCHITECTURES)
+  if(Tensile_NO_LAZY_LIBRARY_LOADING)
+    set(Tensile_Options ${Tensile_Options} NO_LAZY_LIBRARY_LOADING)
   endif()
-  if(Tensile_LAZY_LIBRARY_LOADING)
-    set(Tensile_Options ${Tensile_Options} LAZY_LIBRARY_LOADING)
+  if(Tensile_ASAN_BUILD)
+    set(Tensile_Options ${Tensile_Options} ASAN_BUILD)
+  endif()
+  if(Tensile_KEEP_BUILD_TMP)
+    set(Tensile_Options ${Tensile_Options} KEEP_BUILD_TMP)
+  endif()
+  if(Tensile_NO_COMPRESS)
+    set(Tensile_Options ${Tensile_Options} NO_COMPRESS)
+  endif()
+  if(Tensile_EXPERIMENTAL)
+    set(Tensile_Options ${Tensile_Options} EXPERIMENTAL)
   endif()
 
   # Add a build target for Tensile kernel library
@@ -67,6 +72,7 @@ if( BUILD_WITH_TENSILE )
     TensileCreateLibraryFiles(
       "${CMAKE_CURRENT_SOURCE_DIR}/src/amd_detail/rocblaslt/src/Tensile/Logic/${Tensile_LOGIC}"
       "${PROJECT_BINARY_DIR}/Tensile"
+      "TENSILE_LIBRARY_TARGET"
       ARCHITECTURE        ${Tensile_ARCHITECTURE}
       CODE_OBJECT_VERSION ${Tensile_CODE_OBJECT_VERSION}
       COMPILER            ${Tensile_COMPILER}
@@ -78,6 +84,7 @@ if( BUILD_WITH_TENSILE )
     TensileCreateLibraryFiles(
       "${CMAKE_CURRENT_SOURCE_DIR}/src/amd_detail/rocblaslt/src/Tensile/Logic/${Tensile_LOGIC}"
       "${PROJECT_BINARY_DIR}/Tensile"
+      "TENSILE_LIBRARY_TARGET"
       ARCHITECTURE        ${Tensile_ARCHITECTURE}
       CODE_OBJECT_VERSION ${Tensile_CODE_OBJECT_VERSION}
       COMPILER            ${Tensile_COMPILER}
@@ -85,39 +92,78 @@ if( BUILD_WITH_TENSILE )
       ${Tensile_Options}
     )
   endif()
+  add_dependencies(TENSILE_LIBRARY_TARGET rocisa)
 
-  TensileCreateExtOpLibraries("${PROJECT_BINARY_DIR}/Tensile/library" "${Tensile_ARCHITECTURE}")
+  TensileCreateExtOpLibraries("${PROJECT_BINARY_DIR}/Tensile/library" "${Tensile_ARCHITECTURE}" "build_ext_op_library")
+  add_dependencies(build_ext_op_library rocisa)
 
   # Create a unique name for TensileHost compiled for rocBLAS
   set_target_properties( TensileHost PROPERTIES OUTPUT_NAME rocblaslt-tensile CXX_EXTENSIONS NO )
 
+  set_target_properties( TensileHost PROPERTIES CXX_VISIBILITY_PRESET hidden)
+  set_target_properties( TensileHost PROPERTIES C_VISIBILITY_PRESET hidden)
+
   # Tensile host depends on libs build target
-  add_dependencies( TensileHost TENSILE_LIBRARY_TARGET )
+  if(NOT Tensile_SKIP_BUILD)
+    add_dependencies( TensileHost TENSILE_LIBRARY_TARGET )
+  endif()
 
   if( ROCBLASLT_SHARED_LIBS )
     set( BUILD_SHARED_LIBS ON )
     set_target_properties( TensileHost PROPERTIES POSITION_INDEPENDENT_CODE ON )
   endif()
 
+# Run gcc --version and capture the first line of the output
+execute_process(
+    COMMAND gcc --version
+    OUTPUT_VARIABLE GCC_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+# Extract just the version number from the first line using regular expressions
+string(REGEX MATCH "([0-9]+\\.[0-9]+\\.[0-9]+)" GCC_VERSION "${GCC_OUTPUT}")
+
+# Print the extracted GCC version number
+message(STATUS "Extracted GCC Version: ${GCC_VERSION}")
+
+# Compare GCC version and set the flag conditionally if it's 7.5.0 or less
+if(${GCC_VERSION} VERSION_LESS "7.6.0")
+    # Apply -ftemplate-depth=2048 to tensile_host.cpp if GCC_VERSION is less than 7.6.0 to avoid template recursion
+    set_source_files_properties(src/amd_detail/rocblaslt/src/tensile_host.cpp PROPERTIES COMPILE_FLAGS "-ftemplate-depth=2048")
+endif()
+
   set( Tensile_SRC
     src/amd_detail/rocblaslt/src/tensile_host.cpp
   )
+  set_source_files_properties(src/amd_detail/rocblaslt/src/tensile_host.cpp PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-std=c++17")
 
   set( Tensile_INC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/amd_detail/rocblaslt/src/Tensile
   )
 
-endif( ) # BUILD_WITH_TENSILE
+if(USE_ROCROLLER)
+  set( RocRoller_SRC
+    src/amd_detail/rocblaslt/src/rocroller_host.cpp
+  )
+  set_source_files_properties(${RocRoller_SRC} PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-std=c++20;-x;c++")
+endif()
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/src/amd_detail/rocblaslt/src/kernels/CompileSourceKernel.cmake)
+
+CompileSourceKernel(${CMAKE_CURRENT_SOURCE_DIR}/src/amd_detail/rocblaslt/src/kernels/matrix_transform.cpp "${Tensile_ARCHITECTURE}" "${Tensile_BUILD_ID}" ${PROJECT_BINARY_DIR}/Tensile/library)
+add_dependencies(MatrixTransformKernels TENSILE_LIBRARY_TARGET)
 
 set(DL_LIB dl)
 
 # rocBLASLt source
 set(rocblaslt_source
+  src/amd_detail/rocblaslt/src/Debug.cpp
   src/amd_detail/rocblaslt/src/handle.cpp
   src/amd_detail/rocblaslt/src/status.cpp
   src/amd_detail/rocblaslt/src/rocblaslt_auxiliary.cpp
   src/amd_detail/rocblaslt/src/rocblaslt_mat.cpp
   src/amd_detail/rocblaslt/src/utility.cpp
   src/amd_detail/rocblaslt/src/rocblaslt_transform.cpp
+  src/amd_detail/rocblaslt/src/UserDrivenTuningParser.cpp
   ${Tensile_SRC}
 )

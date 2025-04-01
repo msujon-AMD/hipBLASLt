@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -22,11 +22,10 @@
 #
 ################################################################################
 
+from rocisa.code import SignatureBase
+from rocisa.enum import SignatureValueKind as SVK
 from ..Component import Signature
-from ..Common import globalParameters
-from ..Utils import DataDirection
-from ..TensileInstructions import SignatureBase, getCOVFromParam
-from ..TensileInstructions import SignatureValueKind as SVK
+from ..Common import DataDirection
 from ..Activation import ActivationType
 
 from math import ceil
@@ -34,6 +33,9 @@ from dataclasses import dataclass, field
 
 @dataclass
 class UserArgumentsInfo:
+    # Common args
+    commonArgsNum: int  = 0
+    commonArgsSize: int = 0
     # variable related fixed parameters
     alphaMaxSize: int = 16
     alphaMaxRegisterSize: int = field(init=False)
@@ -52,6 +54,7 @@ class UserArgumentsInfo:
     biasSize: int = 0
     eSize: int = 0
     activationSize: int = 0
+    factorDimSize: int = 0
     # Total argument size
     totalSize: int = 0
 
@@ -62,13 +65,13 @@ class UserArgumentsInfo:
 
 def getSrcValueType(kernel, isTypeA):
     # special cases for F8 datatypes
-    if kernel["ProblemType"]["DataType"].isFloat8():
+    if kernel["ProblemType"]["DataType"].isAnyFloat8():
         srcValueType = "FP8"
-    elif kernel["ProblemType"]["DataType"].isBFloat8():
+    elif kernel["ProblemType"]["DataType"].isAnyBFloat8():
         srcValueType = "BF8"
-    elif kernel["ProblemType"]["DataType"].isFloat8BFloat8():
+    elif kernel["ProblemType"]["DataType"].isAnyFloat8BFloat8():
         srcValueType = "FP8" if isTypeA else "BF8"
-    elif kernel["ProblemType"]["DataType"].isBFloat8Float8():
+    elif kernel["ProblemType"]["DataType"].isAnyBFloat8Float8():
         srcValueType = "BF8" if isTypeA else "FP8"
     else:
         if isTypeA:
@@ -81,9 +84,9 @@ def getSrcValueType(kernel, isTypeA):
 
 def getDstValueType(kernel):
     # special cases for F8 datatypes
-    if kernel["ProblemType"]["DataType"].isFloat8():
+    if kernel["ProblemType"]["DataType"].isAnyFloat8():
         dstValueType = "FP8"
-    elif kernel["ProblemType"]["DataType"].isBFloat8():
+    elif kernel["ProblemType"]["DataType"].isAnyBFloat8():
         dstValueType = "BF8"
     else:
         dstValueType = kernel["ProblemType"]["DataType"].toNameAbbrev().upper()
@@ -115,7 +118,7 @@ class SignatureDefault(Signature):
             kernArgReg -= 2 # strides
         kernArgReg += kernel["ProblemType"]["NumIndicesSummation"]
         kernArgReg += kernel["ProblemType"]["NumIndicesC"]
-        if globalParameters["DebugKernel"]:
+        if writer.debugConfig.debugKernel:
             kernArgReg += writer.states.rpga # debug buffer
         # kernArgBytes = kernArgReg * 4 # bytes/reg
 
@@ -123,12 +126,22 @@ class SignatureDefault(Signature):
 
         sgprWgZ = 1 if kernel["ProblemType"]["NumIndicesC"] > 2 else 0
         signature = SignatureBase(kernelName=writer.states.kernelName,
-                                    codeObjectVersion=getCOVFromParam(kernel["CodeObjectVersion"]),
+                                    kernArgsVersion=kernel["InternalSupportParams"]["KernArgsVersion"],
+                                    codeObjectVersion=kernel["CodeObjectVersion"],
                                     groupSegmentSize=group_segment_size,
-                                    sgprWorkGroup=[1, 1, sgprWgZ],
+                                    sgprWorkGroup=(1, 1, sgprWgZ),
                                     vgprWorkItem=0,
                                     flatWorkGroupSize=(kernel["NumThreads"]),
-                                    preloadKernArgs=kernel["PreloadKernArgs"])
+                                    preloadKernArgs=bool(kernel["PreloadKernArgs"]))
+
+       # General Argument info
+        signature.addArg(   "Gemm info", SVK.SIG_VALUE, "u32")
+        signature.addArg("kernel info0", SVK.SIG_VALUE, "u32")
+        signature.addArg("kernel info1", SVK.SIG_VALUE, "u32")
+        signature.addArg("numWG",        SVK.SIG_VALUE, "u32")
+        # When modify the size, please also update TENSILE_COMMON_KERNEL_ARGS_SIZE in ContractionSolution.hpp
+        userArgumentsInfo.commonArgsNum += 4
+        userArgumentsInfo.commonArgsSize = userArgumentsInfo.commonArgsNum * writer.states.bpr
 
         srcValueTypeA = getSrcValueType(kernel, True)
         srcValueTypeB = getSrcValueType(kernel, False)
@@ -145,11 +158,7 @@ class SignatureDefault(Signature):
             signature.addArg(             "SizesSum%u"%i, SVK.SIG_VALUE,               "u32")
             userArgumentsInfo.gemmArgumentSize += 4
 
-        # General Argument info
-        signature.addArg(  "Gemm info", SVK.SIG_VALUE, "u32")
-        signature.addArg("kernel info", SVK.SIG_VALUE, "u32")
-
-        if globalParameters["DebugKernel"]:
+        if writer.debugConfig.debugKernel:
             signature.addArg("AddressDbg", SVK.SIG_GLOBALBUFFER, "struct", "generic")
         signature.addArg(    "D", SVK.SIG_GLOBALBUFFER, dstValueType, "generic")
         signature.addArg(    "C", SVK.SIG_GLOBALBUFFER, dstValueType, "generic")
@@ -159,6 +168,10 @@ class SignatureDefault(Signature):
 
         if kernel["ProblemType"]["Sparse"]:
             signature.addArg("MetaData", SVK.SIG_GLOBALBUFFER, "void" , "generic")
+
+        if kernel["StreamK"] > 0 and kernel["StreamKAtomic"] == 0:
+            signature.addArg("AddressWS", SVK.SIG_GLOBALBUFFER, cptValueType, "generic")
+            signature.addArg("AddressFlags", SVK.SIG_GLOBALBUFFER, dstValueType, "generic")
 
         for i in range(0, writer.states.d.numSgprStrides):
             signature.addArg(              "strideD%u"%i, SVK.SIG_VALUE,               "u32")
@@ -193,6 +206,25 @@ class SignatureDefault(Signature):
         userArgumentsInfo.gemmArgumentSize += userArgumentsInfo.alphaMaxSize
         userArgumentsInfo.gemmArgumentSize += userArgumentsInfo.betaMaxSize
 
+        if kernel["StreamK"]:
+            # StreamK args
+            signature.addArg("MagicNumberProblemNumGroupTiles0",   SVK.SIG_VALUE, "u32")
+            signature.addArg("MagicShiftProblemNumGroupTiles0",    SVK.SIG_VALUE, "u32")
+            signature.addArg("ItersPerTile",                       SVK.SIG_VALUE, "u32")
+            signature.addArg("MagicNumberItersPerTile",            SVK.SIG_VALUE, "u32")
+            signature.addArg("MagicShiftItersPerTile",             SVK.SIG_VALUE, "u32")
+            signature.addArg("MagicNumProblemNumGroupTiles0By1",   SVK.SIG_VALUE, "u32")
+            signature.addArg("MagicShiftProblemNumGroupTiles0By1", SVK.SIG_VALUE, "u32")
+            signature.addArg("TotalIters",                         SVK.SIG_VALUE, "u32")
+            signature.addArg("SKItersPerWG",                       SVK.SIG_VALUE, "u32")
+            userArgumentsInfo.gemmArgumentSize += 36
+            if kernel["StreamK"] >= 2: # Two-tile SK
+                signature.addArg("skGrid",                         SVK.SIG_VALUE, "u32")
+                signature.addArg("skTiles",                        SVK.SIG_VALUE, "u32")
+                signature.addArg("skExtraIters",                   SVK.SIG_VALUE, "u32")
+                userArgumentsInfo.gemmArgumentSize += 12
+                # "dpTilesPerWG"
+
         if kernel["ProblemType"]["UseScaleAB"]:
             signature.addArg("AddressScaleA", SVK.SIG_GLOBALBUFFER, cptValueType, "generic")
             signature.addArg("AddressScaleB", SVK.SIG_GLOBALBUFFER, cptValueType, "generic")
@@ -206,6 +238,9 @@ class SignatureDefault(Signature):
 
         if kernel["ProblemType"]["UseScaleAlphaVec"]:
             signature.addArg("AddressScaleAlphaVec", SVK.SIG_GLOBALBUFFER, cptValueType, "generic")
+            if kernel["ProblemType"]["UseScaleAlphaVec"] == 3:
+                userArgumentsInfo.factorDimSize =4
+
         userArgumentsInfo.scaleAlphaVecSize += 8
 
         if writer.states.useBias != DataDirection.NONE:
@@ -214,9 +249,11 @@ class SignatureDefault(Signature):
                 signature.addArg("biasType",        SVK.SIG_VALUE,        "u32")
                 signature.addArg("StrideBias",      SVK.SIG_VALUE,        "u32")
                 if kernel["ProblemType"]["UseBias"] == 3:
-                    signature.addArg("biasDim",     SVK.SIG_VALUE,        "u32")
-                    userArgumentsInfo.biasSize += 4
+                    userArgumentsInfo.factorDimSize = 4
         userArgumentsInfo.biasSize += (8 + 4 + 4)
+
+        if userArgumentsInfo.factorDimSize == 4:
+            signature.addArg("factorDim", SVK.SIG_VALUE, "u32")
 
         if kernel["ProblemType"]["UseE"]:
             signature.addArg(      "E", SVK.SIG_GLOBALBUFFER, cptValueType, "generic")
@@ -231,8 +268,14 @@ class SignatureDefault(Signature):
                 actValueType = 'pkf16'
             for name in kernel["ProblemType"]["ActivationType"].getAdditionalArgStringList():
                 signature.addArg(                   name, SVK.SIG_VALUE,        actValueType)
-            if kernel["ProblemType"]["ActivationType"] == 'all':
+            if kernel["ProblemType"]["ActivationType"] in ['all', 'hipblaslt_all'] :
                 signature.addArg(       "activationType", SVK.SIG_VALUE,               "u32")
+
+        # TODO- combine one workspace
+        if (kernel["ProblemType"]["OutputAmaxD"]):
+            signature.addArg(    "AddrAmaxOut", SVK.SIG_GLOBALBUFFER, cptValueType, "generic")
+            signature.addArg(    "AmaxWS",      SVK.SIG_GLOBALBUFFER, cptValueType, "generic")
+            signature.addArg(    "AmaxSync",    SVK.SIG_GLOBALBUFFER, "u32",        "generic")
 
         if (kernel["GlobalSplitUAlgorithm"] == 'MultipleBufferSingleKernel'):
             signature.addArg(    "dstD", SVK.SIG_GLOBALBUFFER, dstValueType, "generic")
@@ -252,6 +295,7 @@ class SignatureDefault(Signature):
                                       userArgumentsInfo.scaleDSize + \
                                       userArgumentsInfo.scaleAlphaVecSize + \
                                       userArgumentsInfo.biasSize + \
+                                      userArgumentsInfo.factorDimSize + \
                                       userArgumentsInfo.eSize + \
                                       userArgumentsInfo.activationSize
 

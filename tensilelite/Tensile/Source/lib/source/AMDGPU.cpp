@@ -26,7 +26,7 @@
 
 #include <Tensile/AMDGPU.hpp>
 
-namespace Tensile
+namespace TensileLite
 {
     TENSILE_API std::string AMDGPU::type() const
     {
@@ -39,6 +39,11 @@ namespace Tensile
         : processor(p)
         , computeUnitCount(cus)
         , deviceName(name)
+        , skDynamicGrid(getSKDynamicGrid())
+        , skMaxCUs(getSKMaxCUs())
+        , skGridMultiplier(getSKGridMultiplier())
+        , skFixedGrid(getSKFixedGrid())
+        , skFullTiles(getSKFullTiles())
     {
     }
 
@@ -79,4 +84,4 @@ namespace Tensile
     {
         return stream << g.description();
     }
-} // namespace Tensile
+} // namespace TensileLite

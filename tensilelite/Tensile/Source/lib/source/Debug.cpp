@@ -36,7 +36,7 @@
 #define DEBUG_SM2 0
 #endif
 
-namespace Tensile
+namespace TensileLite
 {
     std::once_flag debug_init;
 
@@ -120,7 +120,7 @@ namespace Tensile
         return m_debugSelection;
     }
 
-    bool Debug::useExperimentalSelection() const
+    int Debug::useExperimentalSelection() const
     {
         return m_experimentSelection;
     }
@@ -140,9 +140,19 @@ namespace Tensile
         return m_solution_index;
     }
 
+    bool Debug::getSolutionSelectionTrace() const
+    {
+        return m_solselTrace;
+    }
+
     int Debug::getGridbasedTopSols() const
     {
         return m_gridbasedTopSols;
+    }
+
+    bool Debug::printStreamKGridInfo() const
+    {
+        return m_value & 0x80000;
     }
 
     bool Debug::gridBasedKDTree() const
@@ -150,6 +160,10 @@ namespace Tensile
         return m_gridbasedKdTree;
     }
 
+    bool Debug::gridBasedBatchExp() const
+    {
+        return m_gridbasedBatchExp;
+    }
 
     Debug::Debug()
         : m_value(DEBUG_SM)
@@ -171,9 +185,13 @@ namespace Tensile
         if(db_select)
             m_debugSelection = strtol(db_select, nullptr, 0) != 0;
 
-        const char* exp_select = std::getenv("TENSILE_EXPERIMENTAL_SELECTION");
+        const char* exp_select = std::getenv("TENSILE_SOLUTION_SELECTION_METHOD");
         if(exp_select)
-            m_experimentSelection = strtol(exp_select, nullptr, 0) != 0;
+            m_experimentSelection = strtol(exp_select, nullptr, 0);
+
+        const char* solsel_trace = std::getenv("TENSILE_SOLUTION_SELECTION_TRACE");
+        if(solsel_trace)
+            m_solselTrace = strtol(solsel_trace, nullptr, 0) != 0;
 
         const char* solution_index = std::getenv("TENSILE_SOLUTION_INDEX");
         if(solution_index)
@@ -194,6 +212,21 @@ namespace Tensile
         const char* tensile_gridbased_kdtree = std::getenv("TENSILE_GRIDBASED_KDTREE");
         if(tensile_gridbased_kdtree)
             m_gridbasedKdTree = strtol(tensile_gridbased_kdtree, nullptr, 0) != 0;
+
+        const char* tensile_gridbased_batch_exp = std::getenv("TENSILE_GRIDBASED_BATCH_EXP");
+        if(tensile_gridbased_batch_exp)
+            m_gridbasedBatchExp = strtol(tensile_gridbased_batch_exp, nullptr, 0) != 0;
+
+        const char* tensile_marker = std::getenv("TENSILE_ENABLE_MARKER");
+        if(tensile_marker)
+        {
+            m_printMarker = strtol(tensile_marker, nullptr, 0) != 0;
+#ifndef Tensile_ENABLE_MARKER
+            if(m_printMarker)
+                printf("TENSILE_ENABLE_MARKER is not supported in this build. Please rebuild with "
+                       "-DTensile_ENABLE_MARKER=ON\n");
+#endif
+        }
     }
 
-} // namespace Tensile
+} // namespace TensileLite

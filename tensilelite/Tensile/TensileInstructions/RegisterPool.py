@@ -22,10 +22,11 @@
 #
 ################################################################################
 
-from .Code import Module
+from rocisa.instruction import SMovB32, VMovB32
+from rocisa.code import Module
+from rocisa.container import vgpr, sgpr
 from .Formatting import print2, printExit, printWarning
-from .Instructions import SMovB32, VMovB32
-from .Utils import vgpr, sgpr, roundUpToNearestMultiple
+from .Utils import roundUpToNearestMultiple
 
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -68,6 +69,19 @@ class RegisterPool:
     self.defaultPreventOverflow = defaultPreventOverflow
     self.pool = [self.Register(RegisterPool.Status.Unavailable, "init") for i in range(0,size)]
     self.checkOutSize = {}
+    self.checkOutSizeTemp = {}
+    self.occupancyLimitSize    = 0
+    self.occupancyLimitMaxSize = 0
+
+  #######################################
+  # Set occupancy limit
+  def setOccupancyLimit(self, maxSize, size):
+    self.occupancyLimitSize    = size
+    self.occupancyLimitMaxSize = maxSize
+
+  def resetOccupancyLimit(self):
+    self.occupancyLimitSize    = 0
+    self.occupancyLimitMaxSize = 0
 
   ########################################
   # Adds registers to the pool so they can be used as temps
@@ -104,6 +118,22 @@ class RegisterPool:
         raise RuntimeError("RegisterPool::add(%u,%u) pool[%u](%s) = %s" % (start, start+size-1, i, self.pool[i].tag, self.pool[i].status))
     if self.printRP:
       print(self.state())
+
+  # Adds registers to the pool so they can be used as temps
+  def addFromCheckOut(self, start):
+    if start in self.checkOutSize:
+      size = self.checkOutSize[start]
+      for i in range(start, start+size):
+        if self.pool[i].status != RegisterPool.Status.InUse:
+          raise RuntimeError("RegisterPool::addFromCheckOut('%s',%s) is not in InUse state"%(self.pool[start].tag, start))
+        self.pool[i].status = RegisterPool.Status.Available
+      self.checkOutSizeTemp[start] = [size, self.pool[start].tag]
+      self.checkOutSize.pop(start)
+      if self.printRP:
+        print("RP::addFromCheckOut('%s') @ %u +%u"%(self.pool[start].tag, start,size))
+    else:
+      raise RuntimeError("RegisterPool::addFromCheckOut('%s',%s) but it was never checked out"%(self.pool[start].tag, start))
+
   ########################################
   # Remove
   # Removes registers from the pool so they cannot be subsequently allocated for tmps
@@ -125,6 +155,22 @@ class RegisterPool:
         printWarning("RegisterPool::remove(%u,%u) pool[%u](%s) still in use" % (start, start+size-1, i, self.pool[i].tag))
       else:
         printExit("RegisterPool::remove(%u,%u) pool[%u](%s) = %s" % (start, start+size-1, i, self.pool[i].tag, self.pool[i].status))
+
+  # Removes registers from the pool so they cannot be subsequently allocated for tmps
+  def removeFromCheckOut(self, start):
+    if start in self.checkOutSizeTemp:
+      size, tag = self.checkOutSizeTemp[start]
+      for i in range(start, start+size):
+        if self.pool[i].status != RegisterPool.Status.Available:
+          raise RuntimeError("RegisterPool::addFromCheckOut('%s',%s) is not in Available state"%(self.pool[start].tag, start))
+        self.pool[i].status = RegisterPool.Status.InUse
+        self.pool[i].tag = tag
+      self.checkOutSize[start] = size
+      self.checkOutSizeTemp.pop(start)
+      if self.printRP:
+        print("RegisterPool::removeFromCheckOut('%s') @ %u +%u"%(self.pool[start].tag, start,size))
+    else:
+      raise RuntimeError("RegisterPool::removeFromCheckOut('%s',%s) but it was never checked out"%(self.pool[start].tag, start))
 
   ########################################
   # Check Out
@@ -188,6 +234,10 @@ class RegisterPool:
       # new checkout can begin at start
       newSize = start + size
       oldSize = len(self.pool)
+      if self.occupancyLimitSize > 0:
+        if newSize > self.occupancyLimitSize and newSize <= self.occupancyLimitMaxSize:
+          print("newSize", newSize, "OldSIze", oldSize, "Limit", self.occupancyLimitSize)
+          assert self.occupancyLimitSize >= newSize
       overflow = newSize - oldSize
       #print "Overflow: ", overflow
       for i in range(start, len(self.pool)):
@@ -292,6 +342,31 @@ class RegisterPool:
     #print "available()=", self.available(), "availableBlock()=",maxAvailable
     return blocksAvail * blockSize
 
+  # Size of registers of at least specified blockSize
+  def availableBlockMaxVgpr(self, maxVgpr, blockSize, align):
+    if blockSize ==0:
+      blockSize = 1
+    blocksAvail = 0
+    consecAvailable = 0
+    #for s in self.pool:
+    for i in range(0, maxVgpr):
+      if i >= len(self.pool) :
+        if not (consecAvailable == 0 and i % align != 0):
+          consecAvailable += 1
+      else:
+        s = self.pool[i]
+        if s.status == RegisterPool.Status.Available:
+          if not (consecAvailable == 0 and i % align != 0):
+            # do not increment if the first item is not aligned
+            consecAvailable += 1
+        else:
+          blocksAvail += consecAvailable // blockSize
+          consecAvailable = 0
+    blocksAvail += consecAvailable // blockSize
+    #print self.state()
+    #print "available()=", self.available(), "availableBlock()=",maxAvailable
+    return blocksAvail * blockSize
+
   def availableBlockAtEnd(self):
     availCnt = 0
     for s in reversed(self.pool):
@@ -341,6 +416,13 @@ class RegisterPool:
   def stateDetailed(self):
     for index, register in enumerate(self.pool):
         print("%u: %s"%(index, register.tag))
+  
+  def growPool(self, rangeStart: int, rangeEnd: int, checkOutSize: int, comment: str=""):
+    tl = []
+    for _ in range(rangeStart, rangeEnd):
+      tl.append(self.checkOut(checkOutSize, comment))
+    for t in tl:
+      self.checkIn(t)
 
 @dataclass
 class RegisterPoolResource:

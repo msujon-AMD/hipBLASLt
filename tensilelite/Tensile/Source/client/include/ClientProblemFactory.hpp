@@ -35,7 +35,7 @@
 
 #include <cstddef>
 
-namespace Tensile
+namespace TensileLite
 {
     namespace Client
     {
@@ -70,26 +70,27 @@ namespace Tensile
             std::vector<DataType> m_constantTypes;
             std::vector<double>   m_constantValues;
 
-            bool m_stridedBatched;
-            bool m_groupedGemm;
-            bool m_highPrecisionAccumulate;
-            bool m_deterministicMode;
-            bool m_cEqualsD;
-            int  m_useBias;
-            int  m_biasSrc;
-            bool m_useScaleAB;
-            bool m_useScaleCD;
-            bool m_useScaleAlphaVec;
-            bool m_useSynchronizer;
-            bool m_useE;
-            bool m_useGradient = false;
+            bool        m_stridedBatched;
+            bool        m_groupedGemm;
+            bool        m_highPrecisionAccumulate;
+            bool        m_deterministicMode;
+            bool        m_cEqualsD;
+            int         m_useBias;
+            int         m_biasSrc;
+            std::string m_useScaleAB;
+            bool        m_useScaleCD;
+            int         m_useScaleAlphaVec;
+            bool        m_useSynchronizer;
+            bool        m_useE;
+            bool        m_useGradient = false;
+            bool        m_outputAmaxD;
 
             int                              m_sparse;
             KernelLanguage                   m_kernelLanguage;
             PerformanceMetric                m_performanceMetric;
             ActivationType                   m_activationType;
             std::vector<DataType>            m_biasTypeArgs;
-            std::vector<int>                 m_biasDimArgs;
+            std::vector<int>                 m_factorDimArgs;
             std::vector<bool>                m_icacheFlushArgs;
             bool                             m_activationNoGuard;
             std::vector<ActivationType>      m_activationEnumArg;
@@ -99,7 +100,9 @@ namespace Tensile
             DataType                         m_activationComputeType;
             std::vector<std::vector<size_t>> m_problemSizes;
             bool                             m_useUserArgs;
+            bool                             m_swizzleTensorA;
+            bool                             m_swizzleTensorB;
         };
 
     } // namespace Client
-} // namespace Tensile
+} // namespace TensileLite

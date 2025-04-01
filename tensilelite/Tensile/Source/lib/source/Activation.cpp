@@ -27,7 +27,7 @@
 #include <Tensile/Activation.hpp>
 #include <Tensile/Utils.hpp>
 
-namespace Tensile
+namespace TensileLite
 {
     std::string ToString(ActivationType d)
     {
@@ -55,8 +55,12 @@ namespace Tensile
             return "Dgelu";
         case ActivationType::Silu:
             return "Silu";
+        case ActivationType::Swish:
+            return "Swish";
         case ActivationType::All:
             return "All";
+        case ActivationType::Hipblaslt_all:
+            return "Hipblaslt_all";
         case ActivationType::None:
             return "None";
         default:
@@ -117,9 +121,17 @@ namespace Tensile
         {
             t = ActivationType::Silu;
         }
+        else if(strValue == ToString(ActivationType::Swish))
+        {
+            t = ActivationType::Swish;
+        }
         else if(strValue == ToString(ActivationType::All))
         {
             t = ActivationType::All;
+        }
+        else if(strValue == ToString(ActivationType::Hipblaslt_all))
+        {
+            t = ActivationType::Hipblaslt_all;
         }
         else if(strValue == ToString(ActivationType::None))
         {

@@ -25,6 +25,7 @@
 import os
 import pytest
 import subprocess
+import sys
 import yaml
 
 from Tensile import Tensile
@@ -167,7 +168,7 @@ def findAvailableArchs():
     lines = output.decode().splitlines()
     for line in lines:
         line = line.strip()
-        if not line in availableArchs:
+        if (not line in availableArchs) and (not "gfx000" in line):
             availableArchs.append(line)
     return availableArchs
 
@@ -183,6 +184,8 @@ def findConfigs(rootDir=None):
         printRoot = rootDir
 
     availableArchs = findAvailableArchs()
+    globaParamArchsStr = ';'.join(availableArchs)
+    os.environ["PyTestBuildArchNames"] = globaParamArchsStr
 
     params = []
     for (dirpath, dirnames, filenames) in os.walk(rootDir):

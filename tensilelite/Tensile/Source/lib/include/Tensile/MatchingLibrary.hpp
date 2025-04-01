@@ -31,7 +31,7 @@
 
 #include <Tensile/PropertyMatching.hpp>
 
-namespace Tensile
+namespace TensileLite
 {
     /**
      * \ingroup SolutionLibrary
@@ -175,6 +175,18 @@ namespace Tensile
             };
             SolutionVector<MySolution> solutions
                 = table->findTopMatch(problem, transform, numSolutions);
+
+            if(Debug::Instance().printLibraryLogicIndex())
+            {
+                if(!solutions.empty()) {
+                    std::cout << "Library logic index of top solutions: ";
+                    for (auto &rv : solutions)
+                        std::cout << rv->libraryLogicIndex << ", ";
+                    std::cout << std::endl;
+                }
+                else
+                    std::cout << "No solution found" << std::endl;
+            }
             return solutions;
         }
 
@@ -192,4 +204,4 @@ namespace Tensile
             return solutions;
         }
     };
-} // namespace Tensile
+} // namespace TensileLite

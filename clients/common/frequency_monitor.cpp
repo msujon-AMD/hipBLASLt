@@ -139,7 +139,7 @@ public:
 #if rocm_smi_VERSION_MAJOR >= 7
         auto status2 = rsmi_dev_metrics_xcd_counter_get(m_smiDeviceIndex, &m_XCDCount);
 
-        if(status2 != RSMI_STATUS_SUCCESS)
+        if(status2 != RSMI_STATUS_SUCCESS || m_XCDCount == 0)
         {
             m_XCDCount = 1;
         }
@@ -264,7 +264,7 @@ private:
         m_isMultiXCDSupported = true;
 #endif
 
-        m_thread = std::thread([=, this]() { this->runLoop(); });
+        m_thread = std::thread([this]() { this->runLoop(); });
         return;
     }
 
@@ -274,7 +274,7 @@ private:
         {
             std::unique_lock<std::mutex> lock(m_mutex);
 
-            m_task   = std::move(Task([=, this]() { this->collect(); }));
+            m_task   = std::move(Task([this]() { this->collect(); }));
             m_future = m_task.get_future();
 
             m_stop = false;

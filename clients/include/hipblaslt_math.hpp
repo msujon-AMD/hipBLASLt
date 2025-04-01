@@ -49,13 +49,13 @@ inline __host__ hip_bfloat16 float_to_bfloat16_truncate(float val)
 /*! \brief negate a value */
 
 template <class T>
-inline T negate(T x)
+inline __device__ __host__ T negate(T x)
 {
     return -x;
 }
 
 template <>
-inline hip_bfloat16 negate(hip_bfloat16 x)
+inline __device__ __host__ hip_bfloat16 negate(hip_bfloat16 x)
 {
 
 #if defined(__HIP_PLATFORM_AMD__)
@@ -69,18 +69,35 @@ inline hip_bfloat16 negate(hip_bfloat16 x)
 }
 
 template <>
-inline hipblaslt_f8_fnuz negate(hipblaslt_f8_fnuz x)
+inline __device__ __host__ hipblaslt_f8_fnuz negate(hipblaslt_f8_fnuz x)
 {
-    x.data ^= 0x80;
+    x.__x ^= 0x80;
     return x;
 }
 
 template <>
-inline hipblaslt_bf8_fnuz negate(hipblaslt_bf8_fnuz x)
+inline __device__ __host__ hipblaslt_bf8_fnuz negate(hipblaslt_bf8_fnuz x)
 {
-    x.data ^= 0x80;
+    x.__x ^= 0x80;
     return x;
 }
+
+#ifdef ROCM_USE_FLOAT8
+template <>
+inline __device__ __host__ hipblaslt_f8 negate(hipblaslt_f8 x)
+{
+    x.__x ^= 0x80;
+    return x;
+}
+
+template <>
+inline __device__ __host__ hipblaslt_bf8 negate(hipblaslt_bf8 x)
+{
+    x.__x ^= 0x80;
+    return x;
+}
+#endif
+
 // Helper function to reduce intermediate precision and the output type are the same as the input type.
 template <typename TxDLi, typename TxDLo, typename Ti>
 inline void type_to_xdl_math_op_type(Ti* in, size_t s)

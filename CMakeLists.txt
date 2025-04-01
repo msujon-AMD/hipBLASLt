@@ -1,5 +1,5 @@
 # ########################################################################
-# Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -21,13 +21,15 @@
 #
 # ########################################################################
 
-cmake_minimum_required(VERSION 3.25.2 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.22...3.25.2 FATAL_ERROR)
 
 # Build documentation
 option(BUILD_DOCS "Build documentation" OFF)
 
+option(LEGACY_HIPBLAS_DIRECT "Use hipblas headers instead of hipblas-common." OFF )
+
 # This will add compile option: -std=c++17
-set(CMAKE_CXX_STANDARD 20 )
+set(CMAKE_CXX_STANDARD 17 )
 # Without this line, it will add -std=gnu++17 instead, which may have issues.
 set(CMAKE_CXX_EXTENSIONS OFF )
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,6 +54,25 @@ if( NOT DEFINED ENV{HIP_PATH})
 else( )
     set (HIP_PATH $ENV{HIP_PATH} )
 endif( )
+
+if (DEFINED ENV{ROCM_PATH})
+  set(rocm_bin "$ENV{ROCM_PATH}/bin")
+else()
+  set(rocm_bin "/opt/rocm/bin")
+endif()
+
+if (NOT DEFINED ENV{CXX} AND NOT CMAKE_CXX_COMPILER)
+  set(CMAKE_CXX_COMPILER "${rocm_bin}/amdclang++")
+endif()
+
+if (NOT DEFINED ENV{CC} AND NOT CMAKE_C_COMPILER)
+  set(CMAKE_C_COMPILER "${rocm_bin}/amdclang")
+endif()
+
+# TODO: move FC and CXX and CC compiler vars above to new toolchain-linux.cmake (Fortran for clients)
+if (NOT DEFINED ENV{FC} AND NOT CMAKE_Fortran_COMPILER)
+  set(CMAKE_Fortran_COMPILER "gfortran")
+endif()
 
 # hipBLASLt project
 project(hipblaslt LANGUAGES CXX)
@@ -92,7 +113,12 @@ option(USE_CUDA "Look for CUDA and use that as a backend if found" OFF)
 # For lazy library loading
 option(Tensile_MERGE_FILES "Tensile to merge kernels and solutions files?" ON)
 option(Tensile_SEPARATE_ARCHITECTURES "Tensile to use GPU architecture specific files?" ON)
-option(Tensile_LAZY_LIBRARY_LOADING "Tensile to load kernels on demand?" ON)
+option(Tensile_NO_LAZY_LIBRARY_LOADING "Diasble loading kernels on demand?" OFF)
+# For roctx
+include(CMakeDependentOption)
+cmake_dependent_option(HIPBLASLT_ENABLE_MARKER "Enable roctx marker in hipBLASLt" ON "BUILD_SHARED_LIBS" OFF)
+# For rocRoller
+option(USE_ROCROLLER "Build with the rocRoller library" ON)
 
 if(BUILD_CODE_COVERAGE)
   add_compile_options(-fprofile-arcs -ftest-coverage)
@@ -106,15 +132,21 @@ if(BUILD_ADDRESS_SANITIZER)
 endif()
 
 if(NOT BUILD_CUDA)
-    # Determine if CXX Compiler is hip-clang
+    # Determine if CXX Compiler is amdclang
     if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        message(STATUS "Using hip-clang to build for amdgpu backend")
+        message(STATUS "Using amdclang to build for amdgpu backend")
+        if( CMAKE_CXX_COMPILER MATCHES ".*hipcc.*" )
+          message( STATUS "WARNING: hipcc compiler use is deprecated. Use amdclang++ directly." )
+        endif()
         set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__HIP_HCC_COMPAT_MODE__=1" )
         if (CMAKE_BUILD_TYPE MATCHES "Debug" AND NOT WIN32)
             set (CMAKE_CXX_FLAGS_DEBUG "-O0 ${CMAKE_CXX_FLAGS_DEBUG} -gsplit-dwarf -ggdb" )
         endif()
+        if (CMAKE_BUILD_TYPE MATCHES "Release" AND NOT WIN32)
+            set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3" )
+        endif()
     else()
-        message(FATAL_ERROR "'hipcc' compiler required to compile for ROCm software.")
+        message(FATAL_ERROR "'amdclang' compiler required to compile for ROCm software.")
     endif()
 endif()
 
@@ -129,11 +161,17 @@ if (USE_CUDA)
     list( APPEND HIP_INCLUDE_DIRS "${HIP_ROOT_DIR}/include" )
 else()
 
-
-    #Set the AMDGPU_TARGETS with backward compatiblity
-    rocm_check_target_ids(DEFAULT_AMDGPU_TARGETS
-        TARGETS "gfx90a:xnack+;gfx90a:xnack-;gfx940;gfx941;gfx942;gfx1100;gfx1101"
-    )
+    if (NOT BUILD_ADDRESS_SANITIZER)
+      #Set the AMDGPU_TARGETS with backward compatiblity
+      rocm_check_target_ids(DEFAULT_AMDGPU_TARGETS
+          TARGETS "gfx908:xnack+;gfx908:xnack-;gfx90a:xnack+;gfx90a:xnack-;gfx942;gfx950;gfx1100;gfx1101;gfx1103;gfx1150;gfx1151;gfx1200;gfx1201"
+      )
+    else()
+      #build xnack-supported targets only
+      rocm_check_target_ids(DEFAULT_AMDGPU_TARGETS
+          TARGETS "gfx908:xnack+;gfx90a:xnack+;gfx942:xnack+;gfx950:xnack+"
+      )
+    endif()
 
     if (AMDGPU_TARGETS)
         set(TMPAMDGPU_TARGETS "${AMDGPU_TARGETS}")
@@ -152,15 +190,17 @@ else()
         find_package( hip REQUIRED CONFIG PATHS ${HIP_DIR} ${ROCM_PATH} /opt/rocm )
     endif( )
 
-    option( BUILD_WITH_TENSILE "Build full functionality which requires tensile?" ON )
+    # Add rocisa
+    add_subdirectory(tensilelite/rocisa)
 
-    if( BUILD_WITH_TENSILE )
+    option( Tensile_SKIP_BUILD "Skip building Tensile" OFF )
+
     # we will have expanded "all" for tensile to ensure consistency as we have local rules
     set( Tensile_ARCHITECTURE "${AMDGPU_TARGETS}" CACHE STRING "Tensile to use which architecture?" FORCE)
 
     set( Tensile_LOGIC "asm_full" CACHE STRING "Tensile to use which logic?")
-    set( Tensile_CODE_OBJECT_VERSION "default" CACHE STRING "Tensile code_object_version")
-    set( Tensile_COMPILER "hipcc" CACHE STRING "Tensile compiler")
+    set( Tensile_CODE_OBJECT_VERSION "4" CACHE STRING "Tensile code_object_version")
+    set( Tensile_COMPILER "amdclang++" CACHE STRING "Tensile compiler")
     set( Tensile_LIBRARY_FORMAT "msgpack" CACHE STRING "Tensile library format")
     set( Tensile_CPU_THREADS "" CACHE STRING "Number of threads for Tensile parallel build")
 
@@ -205,32 +245,45 @@ else()
     else()
       find_package(Tensile 4.33.0 EXACT REQUIRED HIP LLVM OpenMP PATHS "${INSTALLED_TENSILE_PATH}")
     endif()
-    endif()
 
     # setup hipblaslt defines used for both the library and clients
-    if( BUILD_WITH_TENSILE )
-        list(APPEND TENSILE_DEFINES BUILD_WITH_TENSILE=1)
-        if(Tensile_SEPARATE_ARCHITECTURES)
-          list(APPEND TENSILE_DEFINES ROCBLAS_TENSILE_SEPARATE_ARCH=1)
-        else()
-          list(APPEND TENSILE_DEFINES ROCBLAS_TENSILE_SEPARATE_ARCH=0)
-        endif()
-        if(Tensile_LAZY_LIBRARY_LOADING)
-          list(APPEND TENSILE_DEFINES ROCBLASLT_TENSILE_LAZY_LOAD=1)
-        else()
-          list(APPEND TENSILE_DEFINES ROCBLASLT_TENSILE_LAZY_LOAD=0)
-        endif()
+    if(Tensile_SEPARATE_ARCHITECTURES)
+      list(APPEND TENSILE_DEFINES ROCBLAS_TENSILE_SEPARATE_ARCH=1)
     else()
-        list(APPEND TENSILE_DEFINES BUILD_WITH_TENSILE=0)
+      list(APPEND TENSILE_DEFINES ROCBLAS_TENSILE_SEPARATE_ARCH=0)
+    endif()
+    if(Tensile_NO_LAZY_LIBRARY_LOADING)
+      list(APPEND TENSILE_DEFINES ROCBLASLT_TENSILE_LAZY_LOAD=0)
+    else()
+      list(APPEND TENSILE_DEFINES ROCBLASLT_TENSILE_LAZY_LOAD=1)
     endif()
 endif()
 
-find_package( hipblas REQUIRED CONFIG PATHS ${HIP_DIR} ${ROCM_PATH} /opt/rocm)
+find_package(Boost REQUIRED)
+if(Boost_VERSION VERSION_LESS "1.74.0")
+    message(WARNING "Boost version ${Boost_VERSION} too old, not building RocRoller")
+    set(USE_ROCROLLER OFF)
+endif()
+
+if( LEGACY_HIPBLAS_DIRECT )
+  find_package( hipblas REQUIRED CONFIG PATHS ${HIP_DIR} ${ROCM_PATH} /opt/rocm)
+else()
+  find_package( hipblas-common REQUIRED CONFIG PATHS ${HIP_DIR} ${ROCM_PATH} /opt/rocm)
+endif()
+
+if(HIPBLASLT_ENABLE_MARKER)
+  find_library(rocTracer roctx64)
+  if(NOT rocTracer)
+    message(FATAL_ERROR "roctracer not found, but HIPBLASLT_ENABLE_MARKER is enabled")
+  endif()
+  add_definitions(-DHIPBLASLT_ENABLE_MARKER)
+  rocm_package_add_dependencies(DEPENDS "roctracer >= 1.0.0")
+endif()
 
 # Setup version
-set(VERSION_STRING "0.8.0")
+set(VERSION_STRING "0.15.0")
 rocm_setup_version(VERSION ${VERSION_STRING})
-set(hipblaslt_SOVERSION 0.8)
+set(hipblaslt_SOVERSION 0.15)
 
 
 if( BUILD_CLIENTS_SAMPLES OR BUILD_CLIENTS_TESTS OR BUILD_CLIENTS_BENCHMARKS )
@@ -268,7 +321,7 @@ if( BUILD_CLIENTS_SAMPLES OR BUILD_CLIENTS_TESTS OR BUILD_CLIENTS_BENCHMARKS )
     endif()
   elseif(CLIENTS_OS STREQUAL "ubuntu" AND CLIENTS_OS_VERSION VERSION_GREATER_EQUAL "20.04")
     set(GFORTRAN_DEB "libgfortran5")
-  elseif(CLIENTS_OS STREQUAL "mariner")
+  elseif(CLIENTS_OS STREQUAL "mariner" OR CLIENTS_OS STREQUAL "azurelinux")
     set(GFORTRAN_RPM "gfortran")
   endif()
 
@@ -298,7 +351,18 @@ if( BUILD_CLIENTS_SAMPLES OR BUILD_CLIENTS_TESTS OR BUILD_CLIENTS_BENCHMARKS )
 endif( )
 
 if( NOT BUILD_CUDA )
-  rocm_package_add_dependencies(DEPENDS "hipblas >= 0.50.0")
+  if( LEGACY_HIPBLAS_DIRECT )
+    rocm_package_add_dependencies(DEPENDS "hipblas >= 0.50.0")
+  else()
+    set(hipblas_common_minimum 1.0.0)
+    if(BUILD_SHARED_LIBS)
+    rocm_package_add_deb_dependencies(COMPONENT devel DEPENDS "hipblas-common-dev >= ${hipblas_common_minimum}")
+    rocm_package_add_rpm_dependencies(COMPONENT devel DEPENDS "hipblas-common-devel >= ${hipblas_common_minimum}")
+    else()
+      rocm_package_add_deb_dependencies(COMPONENT devel DEPENDS "hipblas-common-static-dev >= ${hipblas_common_minimum}")
+      rocm_package_add_rpm_dependencies(COMPONENT devel DEPENDS "hipblas-common-static-devel >= ${hipblas_common_minimum}")
+    endif()
+  endif()
 endif( )
 
 # Build docs
@@ -316,6 +380,9 @@ endif()
 
 set( CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION "\${CPACK_PACKAGING_INSTALL_PREFIX}" "\${CPACK_PACKAGING_INSTALL_PREFIX}/include" "\${CPACK_PACKAGING_INSTALL_PREFIX}/lib" )
 
+# work around code object stripping failure if using /usr/bin/strip
+set( CPACK_RPM_SPEC_MORE_DEFINE "%define __strip ${rocm_bin}/../llvm/bin/llvm-strip")
+
 # Give hipblaslt compiled for CUDA backend a different name
 if( NOT USE_CUDA )
     set( package_name hipblaslt )
@@ -327,7 +394,7 @@ set( HIPBLASLT_CONFIG_DIR "\${CPACK_PACKAGING_INSTALL_PREFIX}/${CMAKE_INSTALL_LI
 
 rocm_create_package(
     NAME ${package_name}
-    DESCRIPTION "Radeon Open Compute BLAS marshalling library"
+    DESCRIPTION "HIP library for GEMM operations with extended functionality"
     MAINTAINER "hipBLASLt Maintainer <hipblaslt-maintainer@amd.com>"
     LDCONFIG
     LDCONFIG_DIR ${HIPBLASLT_CONFIG_DIR}

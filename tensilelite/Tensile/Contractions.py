@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -22,18 +22,20 @@
 #
 ################################################################################
 
+from typing import Dict
+
 from .Activation import ActivationType
-from .Common import internalParameters, printExit
 from .TensileInstructions import DataType
 from . import Hardware
 from . import Properties
-from .SolutionStructs import getBiasDataTypeListDefault
-from .SolutionStructs import Solution as OriginalSolution
-from .Utils import state, state_key_ordering
+from Tensile.Common import state, state_key_ordering, IsaInfo, DepthUConfig
+from Tensile.Common.Architectures import gfxToIsa
+from Tensile.Common.GlobalParameters import internalParameters
+from Tensile.SolutionStructs import Solution as OriginalSolution
+from Tensile.SolutionStructs.Problem import getBiasDataTypeListDefault
+from Tensile.Toolchain.Component import Assembler
 
-from . import Common
-from . Common import globalParameters
-
+MIN_K_FOR_GSU = 32
 @state_key_ordering
 class FreeIndex:
     StateKeys = ['isA', 'i', 'c', 'd']
@@ -68,7 +70,7 @@ class ProblemType:
                  'useBeta', 'useBias', 'biasSrcWhiteList', 'useE', 'useScaleAB', 'useScaleCD', 'useScaleAlphaVec', 'biasDataTypeWhiteList',
                  'highPrecisionAccumulate', 'useInitialStridesAB', 'useInitialStridesCD', 'stridedBatched', 'groupedGemm',
                  'useGradient', 'activationType', 'activationArgLength', 'activationComputeDataType', 'activationNoGuard',
-                 'sparse', 'f32XdlMathOp', 'supportDeviceUserArguments']
+                 'sparse', 'f32XdlMathOp', 'supportDeviceUserArguments', 'outputAmaxD', 'swizzleTensorA', 'swizzleTensorB']
     @classmethod
     def FromOriginalState(cls, d):
         indices = [None]*d['TotalIndices']
@@ -141,14 +143,25 @@ class ProblemType:
         if rv.aType.isFloat8BFloat8() or rv.bType.isFloat8BFloat8():
             rv.aType = DataType("F8")
             rv.bType = DataType("B8")
+        elif rv.aType.isFloat8BFloat8_fnuz() or rv.bType.isFloat8BFloat8_fnuz():
+            rv.aType = DataType("F8N")
+            rv.bType = DataType("B8N")
         elif rv.aType.isBFloat8Float8() or rv.bType.isBFloat8Float8():
             rv.aType = DataType("B8")
             rv.bType = DataType("F8")
+        elif rv.aType.isBFloat8Float8_fnuz() or rv.bType.isBFloat8Float8_fnuz():
+            rv.aType = DataType("B8N")
+            rv.bType = DataType("F8N")
 
         if 'DataTypeE' in d:
             rv.eType = DataType(d['DataTypeE'])
         else:
             rv.eType = dstType
+
+        if 'DataTypeAmaxD' in d:
+            rv.amaxDType = DataType(d['DataTypeAmaxD'])
+        else:
+            rv.amaxDType = computeType
 
         rv.computeInputType = srcType
         rv.cType = dstType
@@ -217,14 +230,18 @@ class ProblemType:
         if 'Gradient' in d:
             rv.useGradient = d["Gradient"]
 
-        rv.useScaleAB = False
+        rv.outputAmaxD = False
+        if 'OutputAmaxD' in d:
+            rv.outputAmaxD = d['OutputAmaxD']
+
+        rv.useScaleAB = ""
         if 'UseScaleAB' in d:
             rv.useScaleAB = d['UseScaleAB']
         rv.useScaleCD = False
         if 'UseScaleCD' in d:
             rv.useScaleCD = d['UseScaleCD']
 
-        rv.useScaleAlphaVec = False
+        rv.useScaleAlphaVec = 0
         if 'UseScaleAlphaVec' in d:
             rv.useScaleAlphaVec = d['UseScaleAlphaVec']
 
@@ -248,6 +265,9 @@ class ProblemType:
         rv.supportDeviceUserArguments = False
         if 'SupportUserArgs' in d:
             rv.supportDeviceUserArguments = d['SupportUserArgs']
+
+        rv.swizzleTensorA = d.get('SwizzleTensorA', False)
+        rv.swizzleTensorB = d.get('SwizzleTensorB', False)
         return rv
 
     def __init__(self, freeIndices=None, batchIndices=None, boundIndices=None, aDims=None, bDims=None, cDims=None, dDims=None):
@@ -339,9 +359,11 @@ class ProblemType:
                 predicates.append(ProblemPredicate("BetaZero"))
             predicates.append(ProblemPredicate("BiasDataTypeWhiteList", value=self.biasDataTypeWhiteList))
             predicates.append(ProblemPredicate("BiasSrcWhiteList", value=self.biasSrcWhiteList))
-            if self.activationType == 'all':
+            predicates.append(ProblemPredicate("AmaxDCheck", value=self.outputAmaxD))
+            if self.activationType in ['all', 'hipblaslt_all']:
                 exportType = ActivationType.Export.GRADONLY if self.useGradient else ActivationType.Export.NORMAL
-                enumList = [actEnum.capitalize() for actEnum in ActivationType.getEnumStrList(self.activationComputeDataType, exportType=exportType)]
+                supportedBy = ActivationType.SupportedBy.ALL if self.activationType == 'all' else ActivationType.SupportedBy.HIPBLASLT
+                enumList = [actEnum.capitalize() for actEnum in ActivationType.getEnumStrList(self.activationComputeDataType, supportedBy, exportType=exportType)]
                 predicates.append(ProblemPredicate("ActivationEnumWhiteList", value=enumList))
             # predicates.append(ProblemPredicate("UseScaleAlphaVec", value=self.useScaleAlphaVec))
             # predicates.append(ProblemPredicate("GroupedGemm", value=self.groupedGemm))
@@ -355,6 +377,7 @@ class ProblemType:
             predicates.append(ProblemPredicate("UseGradient", value=self.useGradient))
             predicates.append(ProblemPredicate("UseBias", value=self.useBias))
             predicates.append(ProblemPredicate("UseE", value=self.useE))
+            predicates.append(ProblemPredicate("DataTypeE", value=self.eType))
             predicates.append(ProblemPredicate("StridedBatched", value=self.stridedBatched))
             predicates.append(ProblemPredicate("GroupedGemm", value=self.groupedGemm))
             predicates.append(ProblemPredicate("UseScaleAB", value=self.useScaleAB))
@@ -363,6 +386,8 @@ class ProblemType:
             predicates.append(ProblemPredicate("Sparse", value=self.sparse))
             predicates.append(ProblemPredicate("F32XdlMathOp", value=self.f32XdlMathOp))
             predicates.append(ProblemPredicate("SupportDeviceUserArguments", value=self.supportDeviceUserArguments))
+            predicates.append(ProblemPredicate("SwizzleTensorA", value=self.swizzleTensorA))
+            predicates.append(ProblemPredicate("SwizzleTensorB", value=self.swizzleTensorB))
 
         return predicates
 
@@ -384,6 +409,12 @@ class ProblemPredicate(Properties.Predicate):
     @classmethod
     def FromOriginalKeyPair(cls, pair):
         (key, value) = pair
+        # Arithmetic intensity assertions
+        if key == "AssertAIGreaterThanEqual":
+            return cls("AIGreaterThanEqual", value=value) if value > 0 else None
+        if key == "AssertAILessThanEqual":
+            return cls("AILessThanEqual", value=value) if value > 0 else None
+
         if key.endswith('Multiple'):
             if value == 1:
                 return None
@@ -416,16 +447,27 @@ class ProblemPredicate(Properties.Predicate):
             rv += [cls('BatchSizeEqual', index=0, value=state["BatchSizeEqual"])]
 
         if "SynchronizerSizeCheck" in state:
-            valuepredicates = [];
+            valuepredicates = []
             valuepredicates.append(state["MacroTile0"])
             valuepredicates.append(state["MacroTile1"])
-            valuepredicates.append(state["MIWaveTile"][0]*state["MIWaveTile"][1])
+            if state["EnableMatrixInstruction"]:
+                valuepredicates.append(state["MIWaveTile"][0]*state["MIWaveTile"][1])
+            else:
+                valuepredicates.append(state["ThreadTile0"]*state["ThreadTile1"])
             if state["NumElementsPerBatchStore"] != 0:
                 valuepredicates.append(int((state["NumElementsPerThread"])/state["NumElementsPerBatchStore"]))
             else:
                 valuepredicates.append(1)
             valuepredicates.append(state["NumThreads"])
             rv += [cls('SynchronizerSizeCheck', index=0, value=valuepredicates)]
+
+        if state["InternalSupportParams"]["KernArgsVersion"] >= 1 and \
+                 not (('StreamK' in state) and (state['StreamK'] > 0)):
+            valuepredicates = []
+            valuepredicates.append(state["MacroTile0"])
+            valuepredicates.append(state["MacroTile1"])
+            valuepredicates.append(state["GlobalSplitU"])
+            rv += [cls('WorkgroupNumberCheck', index=0, value=valuepredicates)]
 
         if not problemType.aType.isInt8x4():
             # calculate the minimum supported free dimension size
@@ -445,6 +487,10 @@ class ProblemPredicate(Properties.Predicate):
         if ('GlobalSplitU' in state) and (state['GlobalSplitU'] > 1):
             if ('_GlobalAccumulation' not in state) or (state['_GlobalAccumulation'] != 'MultipleBuffer'):
                 rv += [cls("DeterministicMode", value = False)]
+
+        if ('StreamK' in state) and (state['StreamK'] > 0) and ('StreamKAtomic' in state) and (state['StreamKAtomic'] == 1):
+            # StreamKAtomic = 1 uses atomic for partial tiles
+            rv += [cls("DeterministicMode", value = False)]
 
         # if bufferload is performed, we output some predication info for host side,
         # to prevent from some extremely large problems from launching and causing bufferload offset limit < 2^32
@@ -474,9 +520,18 @@ class ProblemPredicate(Properties.Predicate):
         if 'BufferStore' in state and state['BufferStore'] == True:
             rv += [cls('BufferStoreOffsetLimitCheck', value=state['MacroTile1'])]
 
-        if '_GlobalAccumulation' in state and state['_GlobalAccumulation'] != None:
-            value = globalParameters['MinKForGSU']
+        if '_GlobalAccumulation' in state and state['_GlobalAccumulation'] != None and not state["StreamK"]:
+            value = MIN_K_FOR_GSU
             rv += [cls('GlobalSplitUCheckMinK', value=[value, state["GlobalSplitU"]])]
+
+        if ('WorkGroupMappingXCC' in state) and ('WorkGroupMappingXCCGroup' in state):
+            rv += [cls("WorkgroupMappingXCCCheck", value=[state['WorkGroupMappingXCC'], state['WorkGroupMappingXCCGroup']])]
+
+        if state['ProblemType']['SwizzleTensorA']:
+            rv += [cls('SwizzleTensorA', value=state['ProblemType']['SwizzleTensorA'])]
+
+        if state['ProblemType']['SwizzleTensorB']:
+            rv += [cls('SwizzleTensorB', value=state['ProblemType']['SwizzleTensorB'])]
 
         return rv
 
@@ -508,13 +563,18 @@ class SizeMapping:
                  'workGroupMapping',
                  'packBatchDims',
                  'magicDivAlg',
+                 'streamK',
+                 'streamKAtomic',
                  'sourceKernel',
                  'globalAccumulation',
                  'workspaceSizePerElemC',
                  'workspaceSizePerElemBias',
                  'activationFused',
                  'CustomKernelName',
-                 'workGroupMappingXCC'
+                 'workGroupMappingXCC',
+                 'workGroupMappingXCCGroup',
+                 'globalSplitUCoalesced',
+                 'globalSplitUWorkGroupMappingRoundRobin'
                  ]
 
     @classmethod
@@ -526,6 +586,8 @@ class SizeMapping:
             globalAccum = 2
         if d['_GlobalAccumulation'] == 'MultipleBufferSingleKernel':
             globalAccum = 3
+        if d['_GlobalAccumulation'] == 'PartialsBuffer':
+            globalAccum = 4
         return cls(waveNum                  = d['NumThreads'] // d['WavefrontSize'],
                    workGroup                = d['WorkGroup'],
                    macroTile                = cls.ReadOriginalMacroTile(d),
@@ -543,6 +605,8 @@ class SizeMapping:
                    globalSplitU             = d['GlobalSplitU'],
                    staggerStrideShift       = d['_staggerStrideShift'] if '_staggerStrideShift' in d else 0,
                    packBatchDims            = 0,
+                   streamK                  = d['StreamK'] if 'StreamK' in d else 0,
+                   streamKAtomic            = d['StreamKAtomic'] if 'StreamKAtomic' in d else 0,
                    magicDivAlg              = d.get('MagicDivAlg', 1),
                    sourceKernel             = d['KernelLanguage'] == 'Source',
                    globalAccumulation       = globalAccum,
@@ -550,7 +614,10 @@ class SizeMapping:
                    workspaceSizePerElemBias = d['_WorkspaceSizePerElemBias'],
                    activationFused          = d['ActivationFused'],
                    CustomKernelName         = d['CustomKernelName'],
-                   workGroupMappingXCC      = d['WorkGroupMappingXCC']
+                   workGroupMappingXCC      = d['WorkGroupMappingXCC'],
+                   workGroupMappingXCCGroup = d['WorkGroupMappingXCCGroup'],
+                   globalSplitUCoalesced    = d['GlobalSplitUCoalesced'],
+                   globalSplitUWorkGroupMappingRoundRobin = d['GlobalSplitUWorkGroupMappingRoundRobin']
                    )
 
     @classmethod
@@ -565,14 +632,16 @@ class SizeMapping:
             setattr(self, key, value)
 
 class InternalArgsSupport:
-    StateKeys = ['gsu',
+    StateKeys = ['version',
+                 'gsu',
                  'wgm',
                  'staggerU',
                  'useUniversalArgs']
 
     @classmethod
     def FromOriginalState(cls, d):
-        return cls(gsu = d['InternalSupportParams']['SupportUserGSU'],
+        return cls(version = d['InternalSupportParams']['KernArgsVersion'],
+                   gsu = d['InternalSupportParams']['SupportUserGSU'],
                    wgm = d['InternalSupportParams']['SupportCustomWGM'],
                    staggerU = d['InternalSupportParams']['SupportCustomStaggerU'],
                    useUniversalArgs = d['InternalSupportParams']['UseUniversalArgs'])
@@ -597,13 +666,42 @@ class Solution:
     HiddenKeys = ['originalSolution']
 
     @classmethod
-    def FromSolutionStruct(cls, solution):
-        return cls.FromOriginalState(solution._state)
+    def FromSolutionStruct(
+        cls,
+        solution,
+        splitGSU: bool,
+        printSolutionRejectionReason: bool,
+        printIndexAssignmentInfo: bool,
+        depthUConfig: DepthUConfig,
+        assembler: Assembler,
+        isaInfoMap: Dict[str, IsaInfo]
+    ):
+        return cls.FromOriginalState(
+                   solution._state,
+                   splitGSU,
+                   printSolutionRejectionReason,
+                   printIndexAssignmentInfo,
+                   depthUConfig,
+                   assembler,
+                   isaInfoMap,
+                   solution.srcName
+               )
 
     @classmethod
-    def FromOriginalState(cls, d, deviceInfo=None):
+    def FromOriginalState(
+            cls,
+            d,
+            splitGSU: bool,
+            printSolutionRejectionReason: bool,
+            printIndexAssignmentInfo: bool,
+            depthUConfig: DepthUConfig,
+            #mink
+            assembler,
+            isaInfoMap,
+            srcName = "",
+            deviceInfo=None
+        ):
         rv = cls()
-
 
         if 'SolutionNameMin' in d:
             rv.name = d['SolutionNameMin']
@@ -640,15 +738,23 @@ class Solution:
 
         if 'ISA' not in d:
             if d['KernelLanguage'] == 'Assembly':
-                d['ISA'] = Common.gfxArch(deviceInfo[1])
-            else:
-                d['ISA'] = [0,0,0]
+                d['ISA'] = gfxToIsa(deviceInfo[1])
 
         if 'CUCount' not in d:
             d['CUCount'] = None
 
         rv.hardwarePredicate = Hardware.HardwarePredicate.FromHardware(d['ISA'], d['CUCount'])
-        rv.originalSolution = OriginalSolution(d)
+        rv.originalSolution = OriginalSolution(
+                                  d,
+                                  splitGSU,
+                                  printSolutionRejectionReason,
+                                  printIndexAssignmentInfo,
+                                  depthUConfig,
+                                  assembler,
+                                  isaInfoMap,
+                                  srcName
+                              )
+        rv.srcName = srcName
 
         return rv
 
@@ -666,6 +772,7 @@ class Solution:
         self.libraryLogicIndex = {}
         self.index = None
         self.ideals = {}
+        self.srcName = ""
 
         for key, value in kwargs:
             if key not in Solution.StateKeys and key not in Solution.HiddenKeys:

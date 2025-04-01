@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2019-2023 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2019-2025 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,7 +33,7 @@
 
 #include <cstddef>
 
-namespace Tensile
+namespace TensileLite
 {
     namespace Serialization
     {
@@ -92,6 +92,7 @@ namespace Tensile
             {
                 return SubclassMap({Base::template Pair<MLFeatures::FreeSizeA>(),
                                     Base::template Pair<MLFeatures::FreeSizeB>(),
+                                    Base::template Pair<MLFeatures::BatchSize>(),
                                     Base::template Pair<MLFeatures::BoundSize>(),
                                     Base::template Pair<MLFeatures::Tile0Granularity>(),
                                     Base::template Pair<MLFeatures::Tile1Granularity>(),
@@ -106,7 +107,7 @@ namespace Tensile
 
         template <typename IO>
         const typename ContractionProblemFeatureSMT<IO>::SubclassMap
-            ContractionProblemFeatureSMT<IO>::subclasses
+            SubclassMappingTraits<MLFeatures::MLFeature<ContractionProblemGemm>, IO>::subclasses
             = ContractionProblemFeatureSMT<IO>::GetSubclasses();
 
         template <typename IO>
@@ -118,6 +119,12 @@ namespace Tensile
         template <typename IO>
         struct MappingTraits<MLFeatures::FreeSizeB, IO>
             : public AutoMappingTraits<MLFeatures::FreeSizeB, IO>
+        {
+        };
+
+        template <typename IO>
+        struct MappingTraits<MLFeatures::BatchSize, IO>
+            : public AutoMappingTraits<MLFeatures::BatchSize, IO>
         {
         };
 
@@ -151,4 +158,4 @@ namespace Tensile
         {
         };
     } // namespace Serialization
-} // namespace Tensile
+} // namespace TensileLite

@@ -61,7 +61,7 @@
   UseE: false
   UseInitialStridesAB: false
   UseInitialStridesCD: false
-  UseScaleAlphaVec: true
+  UseScaleAlphaVec: 1
 - - 1LDSBuffer: 0
     ActivationAlt: false
     ActivationFuncCall: false
@@ -151,8 +151,6 @@
     MatrixInstN: 16
     MatrixInstruction: [16, 16, 4, 4]
     MaxOccupancy: 1
-    MaxVgprNumber: 256
-    MinVgprNumber: 0
     NoLdsWriteCode: false
     NoReject: false
     NoTailLoop: false
@@ -237,7 +235,7 @@
       UseE: false
       UseInitialStridesAB: false
       UseInitialStridesCD: false
-      UseScaleAlphaVec: true
+      UseScaleAlphaVec: 1
     ScheduleGlobalRead: 1
     ScheduleIterAlg: 3
     ScheduleLocalWrite: 1
@@ -374,8 +372,6 @@
     MatrixInstN: 32
     MatrixInstruction: [32, 32, 8, 1]
     MaxOccupancy: 1
-    MaxVgprNumber: 256
-    MinVgprNumber: 0
     NoLdsWriteCode: false
     NoReject: false
     NoTailLoop: false
@@ -460,7 +456,7 @@
       UseE: false
       UseInitialStridesAB: false
       UseInitialStridesCD: false
-      UseScaleAlphaVec: true
+      UseScaleAlphaVec: 1
     ScheduleGlobalRead: 1
     ScheduleIterAlg: 3
     ScheduleLocalWrite: 1
@@ -597,8 +593,6 @@
     MatrixInstN: 32
     MatrixInstruction: [32, 32, 8, 1]
     MaxOccupancy: 1
-    MaxVgprNumber: 256
-    MinVgprNumber: 0
     NoLdsWriteCode: false
     NoReject: false
     NoTailLoop: false
@@ -683,7 +677,7 @@
       UseE: false
       UseInitialStridesAB: false
       UseInitialStridesCD: false
-      UseScaleAlphaVec: true
+      UseScaleAlphaVec: 1
     ScheduleGlobalRead: 1
     ScheduleIterAlg: 3
     ScheduleLocalWrite: 1

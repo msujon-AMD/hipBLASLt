@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,11 +29,8 @@
 
 #include <algorithm>
 
-namespace Tensile
+namespace TensileLite
 {
-    std::map<PerformanceMetric, PerformanceMetricTypeInfo> PerformanceMetricTypeInfo::data;
-    std::map<std::string, PerformanceMetric>               PerformanceMetricTypeInfo::typeNames;
-
     std::string ToString(PerformanceMetric d)
     {
         switch(d)
@@ -44,8 +41,10 @@ namespace Tensile
             return "CUEfficiency";
         case PerformanceMetric::DeviceEfficiency:
             return "DeviceEfficiency";
-        case PerformanceMetric::Experimental:
-            return "Experimental";
+        case PerformanceMetric::ExperimentalMLP:
+            return "ExperimentalMLP";
+        case PerformanceMetric::ExperimentalStreamK:
+            return "ExperimentalStreamK";
 
         case PerformanceMetric::Count:
         default:;
@@ -63,13 +62,27 @@ namespace Tensile
             return "CUEff";
         case PerformanceMetric::DeviceEfficiency:
             return "DvEff";
-        case PerformanceMetric::Experimental:
-            return "Test";
+        case PerformanceMetric::ExperimentalMLP:
+            return "MLP";
+        case PerformanceMetric::ExperimentalStreamK:
+            return "StreamK";
 
         case PerformanceMetric::Count:
         default:;
         }
         return "Invalid";
+    }
+
+    std::map<PerformanceMetric, PerformanceMetricTypeInfo>* PerformanceMetricTypeInfo::getData()
+    {
+        static std::map<PerformanceMetric, PerformanceMetricTypeInfo> data;
+        return &data;
+    }
+
+    std::map<std::string, PerformanceMetric>* PerformanceMetricTypeInfo::getTypeNames()
+    {
+        static std::map<std::string, PerformanceMetric> typeNames;
+        return &typeNames;
     }
 
     template <PerformanceMetric T>
@@ -91,7 +104,8 @@ namespace Tensile
         registerTypeInfo<PerformanceMetric::Auto>();
         registerTypeInfo<PerformanceMetric::CUEfficiency>();
         registerTypeInfo<PerformanceMetric::DeviceEfficiency>();
-        registerTypeInfo<PerformanceMetric::Experimental>();
+        registerTypeInfo<PerformanceMetric::ExperimentalMLP>();
+        registerTypeInfo<PerformanceMetric::ExperimentalStreamK>();
     }
 
     void PerformanceMetricTypeInfo::registerAllTypeInfoOnce()
@@ -110,14 +124,17 @@ namespace Tensile
             return tmp;
         };
 
-        data[info.m_performanceMetric] = info;
+        auto* data      = getData();
+        auto* typeNames = getTypeNames();
+
+        data->emplace(info.m_performanceMetric, info);
 
         // Add some flexibility to names registry. Accept abbreviations and
         // lower case versions of the strings
-        typeNames[info.name]            = info.m_performanceMetric;
-        typeNames[toLower(info.name)]   = info.m_performanceMetric;
-        typeNames[info.abbrev]          = info.m_performanceMetric;
-        typeNames[toLower(info.abbrev)] = info.m_performanceMetric;
+        typeNames->emplace(info.name, info.m_performanceMetric);
+        typeNames->emplace(toLower(info.name), info.m_performanceMetric);
+        typeNames->emplace(info.abbrev, info.m_performanceMetric);
+        typeNames->emplace(toLower(info.abbrev), info.m_performanceMetric);
     }
 
     PerformanceMetricTypeInfo const& PerformanceMetricTypeInfo::Get(int index)
@@ -129,8 +146,9 @@ namespace Tensile
     {
         registerAllTypeInfoOnce();
 
-        auto iter = data.find(t);
-        if(iter == data.end())
+        auto* data = getData();
+        auto  iter = data->find(t);
+        if(iter == data->end())
             throw std::runtime_error(
                 concatenate("Invalid performance metric: ", static_cast<int>(t)));
 
@@ -141,8 +159,9 @@ namespace Tensile
     {
         registerAllTypeInfoOnce();
 
-        auto iter = typeNames.find(str);
-        if(iter == typeNames.end())
+        auto* typeNames = getTypeNames();
+        auto  iter      = typeNames->find(str);
+        if(iter == typeNames->end())
             throw std::runtime_error(concatenate("Invalid performance metric: ", str));
 
         return Get(iter->second);
@@ -162,4 +181,4 @@ namespace Tensile
 
         return stream;
     }
-} // namespace Tensile
+} // namespace TensileLite

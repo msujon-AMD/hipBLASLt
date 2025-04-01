@@ -56,12 +56,32 @@ custom.config:
       TransposeB: False
       UseBias: 1
       Activation: True
-      UseScaleAlphaVec: True
+      UseScaleAlphaVec: 1
       UseBeta: True
       Batched: True
       GroupedGemm:   True
       SupportUserArgs: True
-   MatrixInstruction: [16, 16, 16, 1, 1, 8,11, 2,2]
+   EnableF32XdlMathOp: False
+   EnableMatrixInstruction: True
+   MFMA_BF16_1K: False
+   MIBlock: [16, 16, 16, 1, 1, 1]
+   MIInputPerThread: 4
+   MIInputPerThreadA: 4
+   MIInputPerThreadB: 4
+   MIInputPerThreadMetadata: 4
+   MIWaveGroup: [2, 2]
+   MIWaveTile: [8, 11]
+   MatrixInstB: 1
+   MatrixInstBM: 1
+   MatrixInstBN: 1
+   MatrixInstK: 16
+   MatrixInstM: 16
+   MatrixInstN: 16
+   MatrixInstruction: [16, 16, 16, 1]
+   Sparse: 0
+   ThreadTile: [1, 1]
+   WavefrontSize: 64
+   WorkGroup: [32, 8, 1]
    1LDSBuffer: 1
    ScheduleIterAlg: 3
    DepthU: 32
@@ -74,6 +94,7 @@ custom.config:
    AssertFree0ElementMultiple: 8
    AssertSummationElementMultiple: 1
    InternalSupportParams:
+      KernArgsVersion: 0
       SupportUserGSU: False
       SupportCustomWGM: False
       SupportCustomStaggerU: False

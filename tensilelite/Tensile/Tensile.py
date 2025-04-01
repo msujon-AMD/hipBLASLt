@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -27,17 +27,30 @@ if __name__ == "__main__":
     exit(1)
 
 import os
+import subprocess
 import sys
 import argparse
-from .Common import globalParameters, print1, printExit, printWarning, ensurePath, \
-    assignGlobalParameters, restoreDefaultGlobalParameters, HR
-from . import BenchmarkProblems
-from . import ClientWriter
-from . import LibraryIO
-from . import LibraryLogic
-from . import __version__
-from datetime import datetime
 
+from datetime import datetime
+from pathlib import Path
+from typing import Dict
+
+from Tensile import __version__
+from Tensile.Common import print1, printExit, printWarning, ensurePath, HR, \
+                           LIBRARY_LOGIC_DIR, setVerbosity, IsaInfo, makeDebugConfig, \
+                           makeDepthUConfig, DebugConfig, DepthUConfig, IsaVersion, coVersionMap
+from Tensile.Common.Architectures import detectGlobalCurrentISA, isaToGfx
+from Tensile.Common.Capabilities import makeIsaInfoMap
+from Tensile.Common.GlobalParameters import globalParameters, assignGlobalParameters, \
+                                            restoreDefaultGlobalParameters
+from Tensile.Toolchain.Assembly import AssemblyToolchain, makeAssemblyToolchain
+from Tensile.Toolchain.Source import SourceToolchain, makeSourceToolchain
+from Tensile.Toolchain.Validators import validateToolchain, ToolchainDefaults
+from Tensile.Utilities.Decorators.Profile import profile
+from Tensile import BenchmarkProblems
+from Tensile import ClientWriter
+from Tensile import LibraryIO
+from Tensile import LibraryLogic
 
 ###############################################################################
 # Execute Steps in Config
@@ -47,20 +60,63 @@ from datetime import datetime
 #   LibraryLogic.main() to analyse final benchmark data and produce logic/yaml
 #   ClientWriter.main() to create client which calls library based on above yaml
 ################################################################################
-def executeStepsInConfig(config):
+@profile
+def executeStepsInConfig(
+        config: dict,
+        outputPath: Path,
+        asmToolchain: AssemblyToolchain,
+        srcToolchain: SourceToolchain,
+        isaInfoMap: Dict[str, IsaInfo],
+        cCompiler: str,
+        debugConfig: DebugConfig,
+        depthUConfig: DepthUConfig,
+        deviceId: int
+   ):
+    """Conducts the steps in the provided ``config`` according to the Tensile workflow.
 
+    The top-level steps are:
+    1. BenchmarkProblems: Runs the benchmarking steps and generates the directories
+        build_tmp, 1_BenchmarkProblems, 2_BenchmarkData
+    2. LibraryLogic: Analyzes the benchmark data, makes logic files, and generates
+        the directory 3_LibraryLogic
+    3. LibraryClient: Makes the client callable libraries and generates the
+        directory 4_LibraryClient
+
+    Args:
+        config (dict): The configuration dictionary.
+        outputPath (Path): The path to the top-level build directory.
+        asmToolchain (AssemblyToolchain): The toolchain for making assembly kernels.
+        srcToolchain (SourceToolchain): The toolchain for making source kernels.
+        cCompiler (str): The C compiler to use.
+    """
+
+    buildTmpPath = outputPath / "build_tmp"
     ##############################################################################
     # Benchmark Problems
     ##############################################################################
+    gfxName = isaToGfx(next(iter(isaInfoMap)))
     if "BenchmarkProblems" in config:
-        BenchmarkProblems.main(config["BenchmarkProblems"], config["UseCache"])
+        BenchmarkProblems.main(
+            config["BenchmarkProblems"],
+            config["UseCache"],
+            asmToolchain,
+            srcToolchain,
+            cCompiler,
+            outputPath,
+            buildTmpPath,
+            config["ShortNames"],
+            debugConfig,
+            depthUConfig,
+            deviceId,
+            gfxName,
+            isaInfoMap,
+        )
         print1("")
 
     ##############################################################################
     # Library Logic
     ##############################################################################
-    libraryLogicDataPath = os.path.join(globalParameters["WorkingPath"], \
-      globalParameters["LibraryLogicPath"])
+    libraryLogicDataPath = os.path.join(outputPath, LIBRARY_LOGIC_DIR)
     if "LibraryLogic" in config:
         if os.path.exists(libraryLogicDataPath):
             libraryLogicFiles = os.listdir(libraryLogicDataPath)
@@ -71,7 +127,16 @@ def executeStepsInConfig(config):
                 libraryLogicConfig = config["LibraryLogic"]
             else:
                 libraryLogicConfig = {}
-            LibraryLogic.main(libraryLogicConfig)
+            LibraryLogic.main(
+                libraryLogicConfig,
+                srcToolchain.compiler,
+                outputPath,
+                debugConfig.splitGSU,
+                debugConfig.printSolutionRejectionReason,
+                debugConfig.printIndexAssignmentInfo,
+                depthUConfig,
+                isaInfoMap,
+            )
             print1("")
         else:
             print1("# LibraryLogic already done.")
@@ -85,7 +150,16 @@ def executeStepsInConfig(config):
             libraryClientConfig = config["LibraryClient"]
         else:
             libraryClientConfig = {}
-        ClientWriter.main(libraryClientConfig)
+        ClientWriter.main(
+            libraryClientConfig,
+            asmToolchain.assembler,
+            cCompiler,
+            isaInfoMap,
+            outputPath,
+            deviceId,
+            gfxName,
+            config["ShortNames"]
+        )
         print1("")
 
 
@@ -104,29 +178,34 @@ def addCommonArguments(argParser):
         value = eval(value)
         return (key, value)
 
-    argParser.add_argument("-d", "--device", dest="device", type=int, \
+    argParser.add_argument("-d", "--device", dest="device", default=0, type=int, \
         help="override which device to benchmark")
     argParser.add_argument("-p", "--platform", dest="platform", type=int, \
         help="override which OpenCL platform to benchmark")
     argParser.add_argument("--runtime-language", dest="RuntimeLanguage", \
         choices=["HIP", "OCL"], help="override which runtime language to use")
     argParser.add_argument("--code-object-version", dest="CodeObjectVersion", \
-        choices=["default", "V4", "V5"], help="HSA code-object version")
+        choices=["4", "5", "V4", "V5", "default"], action="store", default="4", help="HSA code-object version")
     argParser.add_argument("-v", "--verbose", action="store_true", \
         help="set PrintLevel=2")
     argParser.add_argument("--debug", dest="debug", action="store_true", \
         help="set PrintLevel=2 and CMakeBuildType=Debug")
     argParser.add_argument("--short-names", dest="shortNames", action="store_true", \
         help="use serial kernel and solution names")
-    argParser.add_argument("--no-merge-files", dest="noMergeFiles", action="store_true", \
-        help="kernels and solutions written to individual files")
-    argParser.add_argument("--cxx-compiler", dest="CxxCompiler", choices=["hipcc"], \
-        action="store", default="hipcc", help="select which compiler to use")
+    argParser.add_argument("--cxx-compiler", dest="CxxCompiler", \
+        action="store", default=ToolchainDefaults.CXX_COMPILER, help="select which C++/HIP compiler to use")
+    argParser.add_argument("--c-compiler", dest="CCompiler", \
+        action="store", default=ToolchainDefaults.C_COMPILER, help="select which C compiler to use")
+    argParser.add_argument("--assembler", dest="Assembler", \
+        action="store", default=ToolchainDefaults.ASSEMBLER, help="select which assembler to use")
+    argParser.add_argument("--offload-bundler", dest="OffloadBundler", \
+        action="store", default=ToolchainDefaults.OFFLOAD_BUNDLER, help="select which offload bundler to use")
+    argParser.add_argument("--device-enumerator", dest="DeviceEnumerator", \
+        action="store", default=ToolchainDefaults.DEVICE_ENUMERATOR, help="select which device enumerator to use")
     argParser.add_argument("--logic-format", dest="LogicFormat", choices=["yaml", "json"], \
         action="store", default="yaml", help="select which logic format to use")
     argParser.add_argument("--library-format", dest="LibraryFormat", choices=["yaml", "msgpack"], \
         action="store", default="yaml", help="select which library format to use")
-    argParser.add_argument("--client-build-path", default=None)
     argParser.add_argument("--client-lock", default=None)
     argParser.add_argument("--prebuilt-client", default=None)
 
@@ -139,9 +218,6 @@ def argUpdatedGlobalParameters(args):
     """
     rv = {}
     # override config with command-line options
-    if args.device:
-        print1("# Command-line override: Device")
-        rv["Device"] = args.device
     if args.platform:
         print1("# Command-line override: Platform")
         rv["Platform"] = args.platform
@@ -151,22 +227,9 @@ def argUpdatedGlobalParameters(args):
     if args.CodeObjectVersion:
         print1("# Command-line override: CodeObjectVersion")
         rv["CodeObjectVersion"] = args.CodeObjectVersion
-    if args.verbose:
-        print1("# Command-line override: PrintLevel")
-        rv["PrintLevel"] = 2
     if args.debug:
         print1("# Command-line override: Debug")
-        rv["PrintLevel"] = 2
         rv["CMakeBuildType"] = "Debug"
-    if args.shortNames:
-        rv["ShortNames"] = True
-    if args.noMergeFiles:
-        rv["MergeFiles"] = False
-    if args.CxxCompiler:
-        rv['CxxCompiler'] = args.CxxCompiler
-    print1("")
-    if args.client_build_path:
-        rv["ClientBuildPath"] = args.client_build_path
     if args.client_lock:
         rv["ClientExecutionLockPath"] = args.client_lock
     if args.prebuilt_client:
@@ -175,7 +238,111 @@ def argUpdatedGlobalParameters(args):
     for key, value in args.global_parameters:
         rv[key] = value
 
+    PyTestBuildArchNames = os.environ.get("PyTestBuildArchNames")
+    if PyTestBuildArchNames != None and len(PyTestBuildArchNames) > 0:
+        rv["Architecture"] = PyTestBuildArchNames
+
     return rv
+
+def get_gpu_max_frequency_smi(device_id):
+    '''
+    Get the maximum frequency of the specified GPU device
+    '''
+    try:
+        # Run rocm-smi command and capture output
+        result = subprocess.run(['rocm-smi', '-s'], capture_output=True, text=True)
+
+        if result.returncode != 0:
+           print(f"Error running rocm-smi: {result.stderr}")
+           return None
+
+        # Parse the output
+        lines = result.stdout.split('\n')
+        sclk_section = False
+        frequencies = []
+
+        # Look for the sclk section of the specified device
+        for line in lines:
+            line = line.split(" ")
+            if 'sclk' in line and f"GPU{device_id}" in line:
+                sclk_section = True
+                continue
+
+           # Parse frequencies in the sclk section
+            if sclk_section:
+                for part in line:
+                    if part.endswith("Mhz"):
+                        try:
+                            frequency = part.replace("Mhz", "")
+                            frequencies.append(int(frequency))
+                        except ValueError:
+                            print(f"Error parsing frequency: {part}")
+                        break
+                if "socclk" in line:
+                    break
+
+        # Return the maximum frequency found
+        return max(frequencies) if frequencies else None
+
+    except Exception as e:
+       print(f"Error: {e}")
+       return None
+
+def get_gpu_max_frequency(device_id):
+    try:
+        from hip import hip
+    except ImportError:
+        print("HIP module not found. Installing it now...")
+        # Install the HIP module using pip
+        subprocess.run("python3 -m pip install --upgrade pip", shell=True)
+        subprocess.run("python3 -m pip install --index-url https://test.pypi.org/simple/ hip-python", shell=True)
+
+        from hip import hip
+        print("HIP module successfully installed.")
+
+    def hip_check(call_result):
+        err, result = call_result[0], call_result[1]
+        if isinstance(err, hip.hipError_t) and err != hip.hipError_t.hipSuccess:
+            return None
+        return result
+
+    attrib = hip.hipDeviceAttribute_t.hipDeviceAttributeClockRate
+    try:
+        freq = hip_check(hip.hipDeviceGetAttribute(attrib, device_id))
+    except:
+        freq = None
+
+    return freq // 1000 if freq else None
+
+def get_user_max_frequency():
+    '''
+    Get the maximum frequency from the user when the GPU frequency cannot be determined
+    '''
+    while True:
+        try:
+            user_input = input("Please enter the maximum frequency (MHz): ")
+
+            frequency = int(user_input)
+
+            if frequency <= 0:
+                print("Error: Frequency must be greater than 0 MHz")
+                continue
+
+            return frequency
+
+        except ValueError:
+            print("Error: Please enter a valid number")
+        except Exception as e:
+            print(f"Error: {str(e)}")
+            print("Please try again")
+
+def store_max_frequency(max_frequency):
+    try:
+        os.environ["MAX_FREQ"] = str(max_frequency)
+        return True
+    except Exception as e:
+        print(f"Error setting MAX_FREQ environment variable: {e}")
+        return False
 
 
 ################################################################################
@@ -185,18 +352,15 @@ def argUpdatedGlobalParameters(args):
 def Tensile(userArgs):
     global globalParameters
 
-    # 1st half of splash
     print1("")
     print1(HR)
     print1("#")
     print1("#  Tensile v%s" % (__version__))
 
-    # setup argument parser
-    # yapf: disable
     argParser = argparse.ArgumentParser()
-    argParser.add_argument("config_file", type=os.path.realpath, nargs="+",
+    argParser.add_argument("ConfigFile", type=os.path.realpath, nargs="+",
             help="Benchmark config.yaml file")
-    argParser.add_argument("output_path", \
+    argParser.add_argument("OutputPath", \
             help="Path to conduct benchmark and write output files")
     argParser.add_argument("--version", action="version", \
             version="%(prog)s {version}".format(version=__version__))
@@ -205,14 +369,16 @@ def Tensile(userArgs):
             "and optional second file is size list")
     argParser.add_argument("--use-cache", dest="useCache", action="store_true",
             help="Ignore cache; redo parameter forking and solution generation")
-    # yapf: enable
 
     addCommonArguments(argParser)
     args = argParser.parse_args(userArgs)
-
-    configPaths = args.config_file
+    configPaths = args.ConfigFile
     altFormat = args.AlternateFormat
     useCache = args.useCache
+    outputPath = Path(ensurePath(os.path.abspath(args.OutputPath)))
+    print1(f"#  OutputPath: {str(outputPath)}")
+
+    setVerbosity(2 if (args.debug or args.verbose) else 1)
 
     if altFormat and len(configPaths) > 2:
         printExit("Only 1 or 2 config_files are accepted for the alternate config format: "
@@ -234,13 +400,12 @@ def Tensile(userArgs):
     print1("# Restoring default globalParameters")
     restoreDefaultGlobalParameters()
 
-    # CxxCompiler and LibraryFormat needs to be updated before assignGlobalParameters.
-    if args.CxxCompiler:
-        globalParameters['CxxCompiler'] = args.CxxCompiler
     if args.LogicFormat:
         globalParameters['LogicFormat'] = args.LogicFormat
     if args.LibraryFormat:
         globalParameters['LibraryFormat'] = args.LibraryFormat
+    globalParameters['CodeObjectVersion'] = coVersionMap[args.CodeObjectVersion]
+    print1(f"# Code Object Version: {globalParameters['CodeObjectVersion']}")
 
     # default config format
     if not altFormat:
@@ -271,39 +436,83 @@ def Tensile(userArgs):
     config["UseCache"] = useCache
     globalParameters["ConfigPath"] = configPaths
 
-    # assign global parameters
-    if "GlobalParameters" in config:
-        assignGlobalParameters(config["GlobalParameters"])
-    else:
-        assignGlobalParameters({})
+    device_id = config["GlobalParameters"].get("Device", int(args.device))
+    UseEffLike = config["GlobalParameters"].get("UseEffLike", globalParameters["UseEffLike"])
 
-    globalParameters["OutputPath"] = ensurePath(os.path.abspath(args.output_path))
-    globalParameters["WorkingPath"] = globalParameters["OutputPath"]
+    def isRhel8():
+        try:
+            import distro
+        except:
+            printWarning(
+                """
+                Failed to import distro package. Cannot verify platform.
+                Run: pip install distro or pip install -r requirements.txt to resolve warning.
+                """
+            )
+            return False
+
+        dist = distro.linux_distribution()
+        if distro.id() == "rhel" and distro.version()[0] == "8":
+            printWarning("Rhel8 environments may not support all tools for system queries such as rocm-smi.")
+            return True
+        else:
+            return False
+
+    UseEffLike = False if isRhel8() else UseEffLike
+
+    if 'LibraryLogic' in config and UseEffLike:
+        max_frequency = get_gpu_max_frequency(device_id)
+
+        if not max_frequency or max_frequency <= 0:
+            max_frequency = get_gpu_max_frequency_smi(device_id) # Using rocm-smi just in case
+
+        if not max_frequency or max_frequency <= 0:
+            print(f"Could not detect valid GPU frequency for device {device_id}")
+            max_frequency = get_user_max_frequency()
+
+        print(f"Successfully retrieve Max frequency: {max_frequency} for device {device_id}")
+        store_max_frequency(max_frequency)
+
+    cxxCompiler, \
+    cCompiler, \
+    offloadBundler, \
+    enumerator = validateToolchain(args.CxxCompiler,
+                                   args.CCompiler,
+                                   args.OffloadBundler,
+                                   ToolchainDefaults.DEVICE_ENUMERATOR)
+    asmToolchain = makeAssemblyToolchain(
+        cxxCompiler,
+        offloadBundler,
+        args.CodeObjectVersion,
+    )
+    srcToolchain = makeSourceToolchain(
+        cxxCompiler,
+        offloadBundler,
+    )
+
+    currentIsa = detectGlobalCurrentISA(device_id, enumerator)
+    if currentIsa == IsaVersion(9,5,0):
+        printWarning("HardwareMonitor currently disabled for gfx950")
+        globalParameters["HardwareMonitor"] = False
+    isaInfoMap = makeIsaInfoMap([currentIsa], cxxCompiler)
+    assignGlobalParameters(config.get("GlobalParameters", {}), isaInfoMap)
 
     overrideParameters = argUpdatedGlobalParameters(args)
+
+    if "ShortNames" not in config:
+      config["ShortNames"] = args.shortNames
+
+    debugConfig = makeDebugConfig(config["GlobalParameters"])
+    depthUConfig = makeDepthUConfig(config["GlobalParameters"])
 
     for key, value in overrideParameters.items():
         print("Overriding {0}={1}".format(key, value))
         globalParameters[key] = value
 
-    # Enable profiler
-    profiler = None
-    if globalParameters["Profiler"] == 1:
-        printWarning("cProfiler is enabled. CpuThreads will be set to 1.")
-        globalParameters["CpuThreads"] = 1
-        import cProfile
-        profiler = cProfile.Profile()
-        profiler.enable()
+    if "MaxFileName" in globalParameters or "MaxFileName" in config:
+        printWarning("MaxFileName is no longer configurable, it will be automatically set to 64")
 
-    # Execute Steps in the config script
-    executeStepsInConfig(config)
-
-    if profiler:
-        profiler.disable()
-        filename = globalParameters["OutputPath"] + "/tensile.stats"
-        profiler.dump_stats(filename)
-        filename = globalParameters["OutputPath"] + "/tensile.prof"
-        profiler.dump_stats(filename)
+    executeStepsInConfig(config, outputPath, asmToolchain, srcToolchain, isaInfoMap, cCompiler, debugConfig, depthUConfig, device_id)
 
 def TensileConfigPath(*args):
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), "Configs", *args)

@@ -8,30 +8,13 @@ GlobalParameters:
   CMakeBuildType: Release
   EnqueuesPerSync: 1
   SyncsPerBenchmark: 1
-  LibraryPrintDebug: False
   NumElementsToValidate: 0
   ValidationMaxToPrint: 4
   ValidationPrintValids: False
   ShortNames: False
-  MergeFiles: True
   Platform: 0
   Device: 0
   KernelTime: True
   DataInitTypeBeta : 0
 
 BenchmarkProblems:
-  -
-    - # ProblemType
-      OperationType: GEMM
-      DataType: h
-      HighPrecisionAccumulate: True
-
-    - # BenchmarkProblemSizeGroup - Standard
-      InitialSolutionParameters:
-      ForkParameters:
-        - KernelLanguage: ["Assembly"]
-        - MatrixInstruction: [[16, 16, 16, 1, 1, 2, 2, 1, 1]]
-        - DepthU: [32]
-      BenchmarkFinalParameters:
-        - ProblemSizes:
-          - Exact: [ 128, 128, 128 ]

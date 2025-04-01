@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -181,14 +181,6 @@ static int hipblaslt_version()
     return version;
 }
 
-// Print Version
-static void hipblaslt_print_version()
-{
-    static int version = hipblaslt_version();
-
-    hipblaslt_cout << "hipBLASLt version: " << version << "\n" << std::endl;
-}
-
 static void hipblaslt_print_usage_warning()
 {
     std::string warning(
@@ -218,8 +210,9 @@ static void hipblaslt_print_args(const std::string& args)
 // Device Query
 static void hipblaslt_set_test_device()
 {
+    hipDeviceProp_t props;
     int device_id    = 0;
-    int device_count = query_device_property();
+    int device_count = query_device_property(device_id, props);
     if(device_count <= device_id)
     {
         hipblaslt_cerr << "Error: invalid device ID. There may not be such device ID." << std::endl;

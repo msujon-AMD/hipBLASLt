@@ -27,6 +27,8 @@
 #pragma once
 
 #include "hipblaslt_arguments.hpp"
+#include <fstream>
+#include <string>
 
 namespace ArgumentLogging
 {
@@ -62,10 +64,9 @@ public:
                   double                      gflops,
                   double                      gbytes,
                   double                      cpu_us,
-                  double                      norm1,
-                  double                      norm2,
-                  double                      norm3,
-                  double                      norm4)
+                  double                      norm,
+                  double                      atol,
+                  double                      rtol)
     {
         // requires enablement for frequency logging
         ArgumentModel_log_frequencies(name_line, val_line);
@@ -85,26 +86,26 @@ public:
 
         // per/us to per/sec *10^6
         double hipblaslt_gflops = gflops * batch_count / gpu_us * 1e6;
-        double hipblaslt_GBps   = gbytes * batch_count / gpu_us * 1e6;
+        double hipblaslt_GBps   = gbytes / gpu_us * 1e6;
 
         // append performance fields
         if(gflops != ArgumentLogging::NA_value)
         {
             name_line << ",hipblaslt-Gflops";
-            val_line << ", " << hipblaslt_gflops;
+            val_line << "," << hipblaslt_gflops;
         }
 
         if(gbytes != ArgumentLogging::NA_value)
         {
             // GB/s not usually reported for non-memory bound functions
             name_line << ",hipblaslt-GB/s";
-            val_line << ", " << hipblaslt_GBps;
+            val_line << "," << hipblaslt_GBps;
         }
 
         name_line << ",us";
-        val_line << ", " << gpu_us;
+        val_line << "," << gpu_us;
 
-        if(arg.unit_check || arg.norm_check)
+        if(arg.unit_check || arg.norm_check || arg.allclose_check)
         {
             if(cpu_us != ArgumentLogging::NA_value)
             {
@@ -120,53 +121,60 @@ public:
             }
             if(arg.norm_check)
             {
-                if(norm1 != ArgumentLogging::NA_value)
+                if(norm != ArgumentLogging::NA_value)
                 {
-                    name_line << ",norm_error_1";
-                    val_line << "," << norm1;
+                    name_line << ",norm_error";
+                    val_line << "," << norm;
                 }
-                if(norm2 != ArgumentLogging::NA_value)
+            }
+            if(arg.allclose_check)
+            {
+                if(atol != ArgumentLogging::NA_value)
                 {
-                    name_line << ",norm_error_2";
-                    val_line << "," << norm2;
+                    name_line << ",atol";
+                    if(atol == 1) // atol == init value
+                        val_line << ","
+                                 << "failed";
+                    else
+                        val_line << "," << atol;
                 }
-                if(norm3 != ArgumentLogging::NA_value)
+                if(rtol != ArgumentLogging::NA_value)
                 {
-                    name_line << ",norm_error_3";
-                    val_line << "," << norm3;
-                }
-                if(norm4 != ArgumentLogging::NA_value)
-                {
-                    name_line << ",norm_error_4";
-                    val_line << "," << norm4;
+                    name_line << ",rtol";
+                    if(rtol == 1) // rtol == init value
+                        val_line << ","
+                                 << "failed";
+                    else
+                        val_line << "," << rtol;
                 }
             }
         }
     }
 
-    template <typename T>
-    void log_args(hipblaslt_internal_ostream& str,
+    void log_args(hipDataType                 Tc,
+                  hipblaslt_internal_ostream& str,
                   size_t                      index,
                   int32_t                     solution_index,
                   std::string&                solution_name,
                   std::string&                kernel_name,
+                  std::string&                archName,
+                  std::string&                cuNum,
                   const Arguments&            arg,
                   uint32_t                    splitK,
                   uint32_t                    wgm,
                   double                      gpu_us,
                   double                      flush_us,
                   double                      gflops,
-                  double                      gpu_bytes = ArgumentLogging::NA_value,
-                  double                      cpu_us    = ArgumentLogging::NA_value,
-                  double                      norm1     = ArgumentLogging::NA_value,
-                  double                      norm2     = ArgumentLogging::NA_value,
-                  double                      norm3     = ArgumentLogging::NA_value,
-                  double                      norm4     = ArgumentLogging::NA_value)
+                  double                      gbytes = ArgumentLogging::NA_value,
+                  double                      cpu_us = ArgumentLogging::NA_value,
+                  double                      norm   = ArgumentLogging::NA_value,
+                  double                      atol   = ArgumentLogging::NA_value,
+                  double                      rtol   = ArgumentLogging::NA_value)
     {
         hipblaslt_internal_ostream name_list;
         hipblaslt_internal_ostream value_list;
 
-        name_list << "[" << index << "]";
+        name_list << "[" << index << "]:";
         value_list << "    ";
 
         if(ArgumentModel_get_log_function_name())
@@ -185,10 +193,48 @@ public:
 
 #if __cplusplus >= 201703L
         // C++17
-        (ArgumentsHelper::apply<Args>(print, arg, T{}), ...);
+        //(ArgumentsHelper::apply<Args>(print, arg, T{}), ...);
+        switch(Tc)
+        {
+        case HIP_R_32F:
+            (ArgumentsHelper::apply<Args>(print, arg, float{}), ...);
+            break;
+        case HIP_R_64F:
+            (ArgumentsHelper::apply<Args>(print, arg, double{}), ...);
+            break;
+        case HIP_R_16F:
+            (ArgumentsHelper::apply<Args>(print, arg, hipblasLtHalf{}), ...);
+            break;
+        case HIP_R_32I:
+            (ArgumentsHelper::apply<Args>(print, arg, int32_t{}), ...);
+            break;
+        default:
+            hipblaslt_cerr << "Error type in log_args" << std::endl;
+            (ArgumentsHelper::apply<Args>(print, arg, float{}), ...);
+            break;
+        }
 #else
         // C++14. TODO: Remove when C++17 is used
-        (void)(int[]){(ArgumentsHelper::apply<Args>{}()(print, arg, T{}), 0)...};
+        //(void)(int[]){(ArgumentsHelper::apply<Args>{}()(print, arg, T{}), 0)...};
+        switch(Tc)
+        {
+        case HIP_R_32F:
+            (void)(int[]){(ArgumentsHelper::apply<Args>{}()(print, arg, float{}), 0)...};
+            break;
+        case HIP_R_64F:
+            (void)(int[]){(ArgumentsHelper::apply<Args>{}()(print, arg, double{}), 0)...};
+            break;
+        case HIP_R_16F:
+            (void)(int[]){(ArgumentsHelper::apply<Args>{}()(print, arg, hipblasLtHalf{}), 0)...};
+            break;
+        case HIP_R_32I:
+            (void)(int[]){(ArgumentsHelper::apply<Args>{}()(print, arg, int32_t{}), 0)...};
+            break;
+        default:
+            hipblaslt_cerr << "Error type in log_args" << std::endl;
+            (void)(int[]){(ArgumentsHelper::apply<Args>{}()(print, arg, float{}), 0)...};
+            break;
+        }
 #endif
 
         // Additional name and value list
@@ -204,24 +250,31 @@ public:
                      gpu_us,
                      flush_us,
                      gflops,
-                     gpu_bytes,
+                     gbytes,
                      cpu_us,
-                     norm1,
-                     norm2,
-                     norm3,
-                     norm4);
+                     norm,
+                     atol,
+                     rtol);
 
-        if(solution_index > -1)
+        if(archName != "")
         {
-            str << name_list << "\n"
-                << value_list << "\n"
-                << "    --Solution index: " << solution_index << "\n"
+            auto delim = ",";
+            name_list << delim << "soulution_index";
+            value_list << delim << solution_index;
+
+            const char*   tuningEnv  = getenv("HIPBLASLT_TUNING_FILE");
+            std::string   tuningPath = tuningEnv;
+            std::ofstream file(tuningPath, std::ios::app);
+            file << value_list << delim << archName << delim << cuNum << std::endl;
+        }
+
+        str << name_list << "\n" << value_list << std::endl;
+
+        if(solution_name != "")
+        {
+            str << "    --Solution index: " << solution_index << "\n"
                 << "    --Solution name:  " << solution_name << "\n"
                 << "    --kernel name:    " << kernel_name << std::endl;
-        }
-        else
-        {
-            str << name_list << "\n" << value_list << std::endl;
         }
     }
 };

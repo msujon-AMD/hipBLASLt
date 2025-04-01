@@ -40,7 +40,9 @@
 #include <Tensile/Predicates.hpp>
 #include <Tensile/Utils.hpp>
 
-namespace Tensile
+#define TENSILE_COMMON_KERNEL_ARGS_SIZE 16
+
+namespace TensileLite
 {
     template <typename TAct>
     struct DeviceUserArguments
@@ -103,6 +105,52 @@ namespace Tensile
         size_t depthUorMT1;
     };
 
+    struct SizeMapping
+    {
+        size_t waveNum;
+
+        dim3 workGroupSize;
+        dim3 threadTile;
+        dim3 macroTile;
+
+        std::array<int, 4> matrixInstruction;
+        size_t             grvwA = 1;
+        size_t             grvwB = 1;
+        size_t             gwvwC = 1;
+        size_t             gwvwD = 1;
+
+        size_t staggerU           = 0;
+        size_t staggerUMapping    = 0;
+        size_t depthU             = 0;
+        size_t globalSplitUPGR    = 0;
+        size_t globalSplitU       = 0;
+        size_t staggerStrideShift = 0;
+        int    workGroupMapping   = 0;
+
+        size_t packBatchDims              = 0;
+        int    packSummationDims          = 0;
+        int    magicDivAlg                = 1;
+        int    streamK                    = 0;
+        int    streamKAtomic              = 0;
+        int    persistentKernel           = 0;
+        bool   persistentKernelAlongBatch = false;
+
+        bool sourceKernel = false;
+
+        int    globalAccumulation       = 0;
+        size_t workspaceSizePerElemC    = 0;
+        size_t workspaceSizePerElemBias = 0;
+
+        bool activationFused = true;
+
+        std::string customKernelName;
+
+        int  workGroupMappingXCC                    = 0;
+        int  workGroupMappingXCCGroup               = 0;
+        bool globalSplitUCoalesced                  = false;
+        bool globalSplitUWorkGroupMappingRoundRobin = false;
+    };
+
     /**
  * Represents a single kernel or set of kernels that can perform a single
  * tensor contraction.
@@ -117,10 +165,11 @@ namespace Tensile
         using Inputs        = ContractionInputs;
         using GroupedInputs = ContractionGroupedInputs;
 
- /**
+        /**
   * Indicate a solution is equally or estimatedly matched.
   */
-        enum class MatchingTag {
+        enum class MatchingTag
+        {
             Equal,
             Estimated
         };
@@ -138,6 +187,7 @@ namespace Tensile
         {
             return kernelName;
         }
+
         virtual std::string name() const
         {
             return solutionName;
@@ -145,6 +195,11 @@ namespace Tensile
         virtual std::string description() const
         {
             return kernelName;
+        }
+
+        bool isStreamK() const
+        {
+            return sizeMapping.streamK > 0;
         }
 
         //! Estimates based on problem size, solution tile, and  machine hardware
@@ -220,9 +275,14 @@ namespace Tensile
         /**
    * Calculate required workspace size.
    */
-        size_t requiredWorkspaceSize(Problem const& problem) const;
-        size_t requiredWorkspaceSizeGroupedGemm(std::vector<Problem> const& problems) const;
-        size_t requiredHostSizeGroupedGemmSingle(Problem const& problem) const;
+        size_t requiredWorkspaceSize(Problem const& problem, Hardware const& hardware) const;
+        size_t requiredWorkspaceSizeGroupedGemm(std::vector<Problem> const& problems,
+                                                Hardware const&             hardware) const;
+        size_t requiredHostSizeGroupedGemmSingle(Problem const&  problem,
+                                                 Hardware const& hardware) const;
+
+        size_t getSKGrid(Problem const& problem, Hardware const& hardware, size_t tiles) const;
+        size_t partialTileSize(size_t skGrid) const;
 
         static float computeGranularity(float x);
 
@@ -282,6 +342,7 @@ namespace Tensile
         virtual std::vector<KernelInvocation>
             solveGroupedGemmGPU(std::vector<Problem> const& problems,
                                 GroupedInputs const&        inputs,
+                                Hardware const&             hardware,
                                 const void*                 dUA,
                                 const void*                 workspace,
                                 hipStream_t                 stream) const;
@@ -313,6 +374,9 @@ namespace Tensile
         void singleCallArgs(Problem const&           problem,
                             ContractionInputs const& inputs,
                             uint32_t const&          workspaceOffsetInByte,
+                            Hardware const*          hardware,
+                            dim3 const&              problemNumGroupTiles,
+                            dim3 const&              numWorkGroups,
                             KA&                      args) const;
 
         // Common kernel related arguments (e.g. gemm_count, arg type, MT, GSU...)
@@ -320,22 +384,26 @@ namespace Tensile
         void kernelArgs(uint32_t                            gemmCount,
                         uint32_t                            argType,
                         KA&                                 args,
+                        uint32_t                            numWorkGroups,
+                        Hardware const*                     hardware,
                         const ContractionProblemParameters& param) const;
 
         template <typename KA>
         inline void calculateSingleCallWorkGroupItems(std::vector<Problem> const& problems,
-                                                      const Tensile::dim3&        workGroupSize,
-                                                      Tensile::dim3&              numWorkGroups,
-                                                      Tensile::dim3&              numWorkItems,
+                                                      const TensileLite::dim3&    workGroupSize,
+                                                      TensileLite::dim3&          numWorkGroups,
+                                                      TensileLite::dim3&          numWorkItems,
                                                       KA&                         h_args) const;
 
         template <bool T_Debug>
         KernelInvocation generateSingleCall(Problem const&           problem,
-                                            ContractionInputs const& inputs) const;
+                                            ContractionInputs const& inputs,
+                                            Hardware const&          hardware) const;
 
         template <bool T_Debug, typename KA>
         KernelInvocation generateSingleCallGroupedGemm(std::vector<Problem> const& problems,
                                                        GroupedInputs const&        inputs,
+                                                       Hardware const&             hardware,
                                                        KA&                         h_args,
                                                        void const* userArgs = nullptr) const;
 
@@ -359,9 +427,9 @@ namespace Tensile
         inline void calculateConversionCallWorkGroupItems(
             std::vector<ContractionSolution::Problem> const& problems,
             size_t&                                          vw,
-            const Tensile::dim3&                             workGroupSize,
-            Tensile::dim3&                                   numWorkGroups,
-            Tensile::dim3&                                   numWorkItems,
+            const TensileLite::dim3&                         workGroupSize,
+            TensileLite::dim3&                               numWorkGroups,
+            TensileLite::dim3&                               numWorkItems,
             KA&                                              args) const;
 
         template <bool T_Debug>
@@ -369,8 +437,11 @@ namespace Tensile
                                                       ContractionInputs const& inputs) const;
 
         template <bool T_Debug, typename KA>
-        KernelInvocation generateOutputConversionCallGroupedGemm(
-            std::vector<Problem> const& problems, GroupedInputs const& inputs, KA& h_args) const;
+        KernelInvocation
+            generateOutputConversionCallGroupedGemm(std::vector<Problem> const& problems,
+                                                    GroupedInputs const&        inputs,
+                                                    Hardware const&             hardware,
+                                                    KA&                         h_args) const;
 
         template <bool T_Debug>
         KernelInvocation updateUserArgsOutputConversionCallGroupedGemm(
@@ -400,49 +471,9 @@ namespace Tensile
                                               size_t                   mt1,
                                               size_t                   vw) const;
 
-        struct SizeMapping
-        {
-            size_t waveNum;
-
-            dim3 workGroupSize;
-            dim3 threadTile;
-            dim3 macroTile;
-
-            std::array<int, 4> matrixInstruction;
-            size_t grvwA              = 1;
-            size_t grvwB              = 1;
-            size_t gwvwC              = 1;
-            size_t gwvwD              = 1;
-
-            size_t staggerU           = 0;
-            size_t staggerUMapping    = 0;
-            size_t depthU             = 0;
-            size_t globalSplitUPGR    = 0;
-            size_t globalSplitU       = 0;
-            size_t staggerStrideShift = 0;
-            int    workGroupMapping   = 0;
-
-            size_t packBatchDims              = 0;
-            int    packSummationDims          = 0;
-            int    magicDivAlg                = 1;
-            int    persistentKernel           = 0;
-            bool   persistentKernelAlongBatch = false;
-
-            bool sourceKernel = false;
-
-            int    globalAccumulation       = 0;
-            size_t workspaceSizePerElemC    = 0;
-            size_t workspaceSizePerElemBias = 0;
-
-            bool activationFused = true;
-
-            std::string customKernelName;
-
-            int workGroupMappingXCC = 1;
-        };
-
         struct InternalArgsSupport
         {
+            int  version          = 0;
             bool gsu              = true;
             bool wgm              = true;
             bool staggerU         = true;
@@ -468,12 +499,13 @@ namespace Tensile
             bool                  useGradient               = false;
             int                   useBias                   = 0;
             bool                  useE                      = false;
-            bool                  useScaleAB                = false;
+            std::string           useScaleAB                = "";
             bool                  useScaleCD                = false;
-            bool                  useScaleAlphaVec          = false;
+            int                   useScaleAlphaVec          = 0;
             bool                  useInitialStridesAB       = false;
             bool                  useInitialStridesCD       = false;
             bool                  stridedBatched            = true;
+            bool                  outputAmaxD               = false;
             bool                  groupedGemm               = false;
             ActivationType        activationType            = ActivationType::None;
             int                   activationArgLength       = 0;
@@ -483,6 +515,8 @@ namespace Tensile
             int                   sparse                     = 0;
             bool                  stochasticRounding         = false;
             bool                  supportDeviceUserArguments = false;
+            bool                  swizzleTensorA             = false;
+            bool                  swizzleTensorB             = false;
         };
 
         struct LinearModel
@@ -536,4 +570,4 @@ namespace Tensile
     std::ostream& operator<<(std::ostream&                                    stream,
                              ContractionSolution::ProjectedPerformance const& spm);
     std::ostream& operator<<(std::ostream& stream, BufferLoadCheckPacket const& st);
-} // namespace Tensile
+} // namespace TensileLite

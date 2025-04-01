@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -22,7 +22,7 @@
 #
 ################################################################################
 
-cmake_minimum_required(VERSION 3.25.2)
+cmake_minimum_required(VERSION 3.22...3.25.2)
 
 if(NOT DEFINED TENSILE_ROOT)
     get_filename_component(TENSILE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" DIRECTORY)
@@ -47,17 +47,20 @@ set(tensile_sources  ${tensile_sources}
     source/TensorDescriptor.cpp
     source/Tensile.cpp
     source/Utils.cpp
+    source/MLPNet.cpp
     )
 
-if(TENSILE_USE_LLVM)
-    find_package(LLVM 13.0 QUIET CONFIG)
-    if(NOT LLVM_FOUND)
-        find_package(LLVM 12.0 QUIET CONFIG)
-        if(NOT LLVM_FOUND)
-            find_package(LLVM REQUIRED CONFIG)
-        endif()
-    endif()
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-ffast-math" CXX_FAST_MATH_FLAG_SUPPORTED)
+if(CXX_FAST_MATH_FLAG_SUPPORTED)
+    set_source_files_properties(source/MLPNet.cpp PROPERTIES COMPILE_FLAGS "-ffast-math")
+endif()
 
+
+if(TENSILE_USE_LLVM)
+    if("$ENV{TENSILE_CLIENT_STATIC}" STREQUAL "" AND NOT TENSILE_CLIENT_STATIC)
+        find_package(LLVM REQUIRED)
+    endif()
     set(tensile_sources ${tensile_sources}
         source/llvm/YAML.cpp
         source/llvm/Loading.cpp
@@ -91,7 +94,7 @@ add_library (TensileHost STATIC ${tensile_sources})
 
 set_target_properties(TensileHost
                       PROPERTIES
-                      CXX_STANDARD 20
+                      CXX_STANDARD 17
                       CXX_STANDARD_REQUIRED ON
                       CXX_EXTENSIONS OFF)
 
@@ -126,11 +129,11 @@ if(TENSILE_USE_LLVM)
         NAMES LLVMObjectYAML
         PATHS ${LLVM_LIBRARY_DIR})
     message("LLVMObjectYAML_LIBRARY: ${LLVMObjectYAML_LIBRARY}")
-    #Use LLVM shared libs if LLVMObjectYAML static lib cannot be found
+    # Use LLVM shared libs if LLVMObjectYAML static lib cannot be found
     if(LLVMObjectYAML_LIBRARY)
-        target_link_libraries(TensileHost PRIVATE LLVMObjectYAML )
+        target_link_libraries(TensileHost PRIVATE LLVMObjectYAML)
     else()
-        target_link_libraries(TensileHost PRIVATE LLVM )
+        target_link_libraries(TensileHost PRIVATE LLVM)
     endif()
     target_include_directories(TensileHost PRIVATE ${LLVM_INCLUDE_DIRS})
 endif()

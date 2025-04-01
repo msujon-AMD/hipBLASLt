@@ -1,5 +1,5 @@
 # ########################################################################
-# Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -45,6 +45,10 @@ target_include_directories( hipblaslt-bench
 
 target_link_libraries( hipblaslt-bench PRIVATE ${BLAS_LIBRARY} roc::hipblaslt )
 
+if( USE_ROCROLLER )
+    set_source_files_properties(${mxDataGen_SRC} PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-std=c++20")
+endif()
+
 if( CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   # GCC or hip-clang needs specific flags to turn on f16c intrinsics
   target_compile_options( hipblaslt-bench PRIVATE -mf16c )
@@ -69,6 +73,10 @@ else()
   target_link_libraries( hipblaslt-bench PRIVATE ${CUDA_LIBRARIES} )
 endif()
 
+if( LEGACY_HIPBLAS_DIRECT )
+  target_compile_definitions(hipblaslt-bench PUBLIC LEGACY_HIPBLAS_DIRECT )
+endif()
+
 # target_compile_options does not go to linker like CMAKE_CXX_FLAGS does, so manually add
 if (NOT WIN32)
   if (BUILD_CUDA)
@@ -77,8 +85,11 @@ if (NOT WIN32)
     target_link_libraries( hipblaslt-bench PRIVATE lapack cblas )
   endif()
   list( APPEND COMMON_LINK_LIBS "-lm -lstdc++fs")
-  if (NOT BUILD_FORTRAN_CLIENTS)
-    list( APPEND COMMON_LINK_LIBS "-lgfortran -lflang -lflangrti") # for lapack
+
+  if (CMAKE_Fortran_COMPILER_ID MATCHES "GNU")
+    list( APPEND COMMON_LINK_LIBS "-lgfortran") # for lapack
+  else()
+    list( APPEND COMMON_LINK_LIBS "-lflang -lflangrti") # for lapack
   endif()
 else()
   list( APPEND COMMON_LINK_LIBS "libomp")
@@ -93,13 +104,20 @@ add_dependencies( hipblaslt-bench hipblaslt-common )
 
 rocm_install(TARGETS hipblaslt-bench COMPONENT benchmarks)
 
+# A special exe to calc api overhead, it uses the pattern similar with samples
+add_executable( hipblaslt-api-overhead client_api_overhead.cpp)
+target_include_directories( hipblaslt-api-overhead
+  PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../samples/common>
+)
+
 # Other bench files
 add_executable( hipblaslt-bench-groupedgemm-fixed-mk client_groupedgemm_fixed_mk.cpp ../common/hipblaslt_random.cpp ../common/hipblaslt_arguments.cpp)
 add_executable( hipblaslt-bench-extop-layernorm client_extop_layernorm.cpp ../common/hipblaslt_random.cpp)
 add_executable( hipblaslt-bench-extop-matrixtransform client_extop_matrixtransform.cpp ../common/hipblaslt_random.cpp)
 add_executable( hipblaslt-bench-extop-softmax client_extop_softmax.cpp ../common/hipblaslt_random.cpp)
 add_executable( hipblaslt-bench-extop-amax client_extop_amax.cpp  ../common/hipblaslt_random.cpp)
-set(ext_bench_list_all hipblaslt-bench-groupedgemm-fixed-mk hipblaslt-bench-extop-layernorm hipblaslt-bench-extop-matrixtransform hipblaslt-bench-extop-softmax hipblaslt-bench-extop-amax)
+set(ext_bench_list_all hipblaslt-api-overhead hipblaslt-bench-groupedgemm-fixed-mk hipblaslt-bench-extop-layernorm hipblaslt-bench-extop-matrixtransform hipblaslt-bench-extop-softmax hipblaslt-bench-extop-amax)
 # Currently only build this for Ubuntu because other distro's llvm-dev version is not matching the rocm's version.
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
   file(READ "/etc/os-release" OS_RELEASE)

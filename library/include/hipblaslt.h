@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,16 +29,15 @@
  *  flexible API to let user set attributes for solution selection.
  */
 
-//! HIP = Heterogeneous-compute Interface for Portability
-//!
-//! Define a extremely thin runtime layer that allows source code to be compiled
-//! unmodified through either AMD HCC or NVCC. Key features tend to be in the
-//! spirit and terminology of CUDA, but with a portable path to other
-//! accelerators as well.
-//!
-//! This is the master include file for hipBLASLt, wrapping around rocBLASLt and
-//! cuBLASLt.
-//
+/*! \defgroup types_module Data types
+ *
+ *
+ *  \defgroup library_module Library management functions
+ *  Provides the library handle
+ *
+ *  \defgroup aux_module Auxilary functions
+ *  Initializes hipBLASLt for the current HIP device
+ */
 
 #pragma once
 #ifndef _HIPBLASLT_H_
@@ -46,15 +45,21 @@
 
 #include "hipblaslt/hipblaslt-export.h"
 #include "hipblaslt/hipblaslt-version.h"
+#ifndef LEGACY_HIPBLAS_DIRECT
+#include <hipblas-common/hipblas-common.h>
+#else
 #include <hipblas/hipblas.h>
+#endif
 
 #include <memory>
+#include <regex>
 #include <vector>
 
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_complex.h>
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
+#include <hip/hip_version.h>
 
 #if defined(__HIP_PLATFORM_AMD__)
 #include "hipblaslt-types.h"
@@ -64,23 +69,29 @@
 // clang-format off
 
 #define HIPBLASLT_DATATYPE_INVALID static_cast<hipDataType>(255)
+// TODO: Replace static_cast<hipblasComputeType_t>(0) with the appropriate value since 0 represents f16_r
+#define HIPBLASLT_COMPUTE_TYPE_INVALID static_cast<hipblasComputeType_t>(0)
+#define HIPBLASLT_OPERATION_INVALID static_cast<hipblasOperation_t>(0)
+#define ROCBLASLT_COMPUTE_TYPE_INVALID static_cast<rocblaslt_compute_type>(255)
 
 /*! \ingroup types_module
  *  \brief Specify the enum type to set the postprocessing options for the epilogue.
  */
 typedef enum {
-  HIPBLASLT_EPILOGUE_DEFAULT = 1,         /**<No special postprocessing, just scale and quantize the results if necessary.*/
-  HIPBLASLT_EPILOGUE_RELU = 2,            /**<Apply ReLU point-wise transform to the results:(x:=max(x, 0))*/
-  HIPBLASLT_EPILOGUE_BIAS = 4,            /**<Apply (broadcast) bias from the bias vector. Bias vector length must match matrix D rows, and it must be packed (such as stride between vector elements is 1). Bias vector is broadcast to all columns and added before applying the final postprocessing.*/
-  HIPBLASLT_EPILOGUE_RELU_BIAS = 6,       /**<Apply bias and then ReLU transform.*/
-  HIPBLASLT_EPILOGUE_GELU = 32,           /**<Apply GELU point-wise transform to the results (x:=GELU(x)).*/
-  HIPBLASLT_EPILOGUE_GELU_BIAS = 36,      /**<Apply Bias and then GELU transform.*/
-  HIPBLASLT_EPILOGUE_GELU_AUX = 160,      /**<Output GEMM results before applying GELU transform.*/
-  HIPBLASLT_EPILOGUE_GELU_AUX_BIAS = 164, /**<Output GEMM results after applying bias but before applying GELU transform.*/
-  HIPBLASLT_EPILOGUE_DGELU = 192,         /**<Apply gradient GELU transform. Requires additional aux input. */
-  HIPBLASLT_EPILOGUE_DGELU_BGRAD = 208,   /**<Apply gradient GELU transform and bias gradient to the results. Requires additional aux input. */
-  HIPBLASLT_EPILOGUE_BGRADA = 256,        /**<Apply bias gradient to A and output gemm result. */
-  HIPBLASLT_EPILOGUE_BGRADB = 512         /**<Apply bias gradient to B and output gemm result. */
+  HIPBLASLT_EPILOGUE_DEFAULT = 1,               /**<No special postprocessing, just scale and quantize the results if necessary.*/
+  HIPBLASLT_EPILOGUE_RELU = 2,                  /**<Apply ReLU point-wise transform to the results:(x:=max(x, 0))*/
+  HIPBLASLT_EPILOGUE_BIAS = 4,                  /**<Apply (broadcast) bias from the bias vector. Bias vector length must match matrix D rows, and it must be packed (such as stride between vector elements is 1). Bias vector is broadcast to all columns and added before applying the final postprocessing.*/
+  HIPBLASLT_EPILOGUE_RELU_BIAS = 6,             /**<Apply bias and then ReLU transform.*/
+  HIPBLASLT_EPILOGUE_GELU = 32,                 /**<Apply GELU point-wise transform to the results (x:=GELU(x)).*/
+  HIPBLASLT_EPILOGUE_GELU_BIAS = 36,            /**<Apply Bias and then GELU transform.*/
+  HIPBLASLT_EPILOGUE_GELU_AUX = 160,            /**<Output GEMM results before applying GELU transform.*/
+  HIPBLASLT_EPILOGUE_GELU_AUX_BIAS = 164,       /**<Output GEMM results after applying bias but before applying GELU transform.*/
+  HIPBLASLT_EPILOGUE_DGELU = 192,               /**<Apply gradient GELU transform. Requires additional aux input. */
+  HIPBLASLT_EPILOGUE_DGELU_BGRAD = 208,         /**<Apply gradient GELU transform and bias gradient to the results. Requires additional aux input. */
+  HIPBLASLT_EPILOGUE_BGRADA = 256,              /**<Apply bias gradient to A and output gemm result. */
+  HIPBLASLT_EPILOGUE_BGRADB = 512,              /**<Apply bias gradient to B and output gemm result. */
+  HIPBLASLT_EPILOGUE_SWISH_EXT = 65536,         /**<Apply Swish point-wise transform to the results (x:=Swish(x, 1)).*/
+  HIPBLASLT_EPILOGUE_SWISH_BIAS_EXT = 65540,    /**<Apply Bias and then Swish transform.*/
 } hipblasLtEpilogue_t;
 
 /*! \ingroup types_module
@@ -140,6 +151,16 @@ typedef enum {
 } hipblasLtPointerMode_t;
 
 /*! \ingroup types_module
+ *  \brief Block scale mode for A and B.
+ */
+typedef enum {
+    HIPBLASLT_MATMUL_MATRIX_SCALE_SCALAR_32F = 0,  /** Scaling factors are single-precision scalars applied to the whole tensors (this mode is the default for fp8). */
+    HIPBLASLT_MATMUL_MATRIX_SCALE_VEC16_UE4M3 = 1, /** Not supported yet. Scaling factors are tensors that contain a dedicated scaling factor stored as an 8-bit HIP_R_8F_E4M3 value for each 16-element block in the innermost dimension of the corresponding data tensor. */
+    HIPBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0 = 2, /** Scaling factors are tensors that contain a dedicated scaling factor stored as an 8-bit R_8F_UE8M0 value for each 32-element block in the innermost dimension of the corresponding data tensor. */
+    HIPBLASLT_MATMUL_MATRIX_SCALE_END
+} hipblasLtMatmulMatrixScale_t;
+
+/*! \ingroup types_module
  *  \brief Specify the attributes that define the specifics of the matrix multiply operation.
  */
 typedef enum {
@@ -158,8 +179,13 @@ typedef enum {
   HIPBLASLT_MATMUL_DESC_EPILOGUE_AUX_BATCH_STRIDE = 12, /**<The batch stride of the epilogue auxiliary buffer pointer in the device memory. Data Type:int64_t */
   HIPBLASLT_MATMUL_DESC_POINTER_MODE = 13,              /**<Specifies alpha and beta are passed by reference, whether they are scalars on the host or on the device, or device vectors. Default value is: HIPBLASLT_POINTER_MODE_HOST (i.e., on the host). Data Type: int32_t based on hipblasLtPointerMode_t*/
   HIPBLASLT_MATMUL_DESC_AMAX_D_POINTER = 14,           /**<Device pointer to the memory location that on completion will be set to the maximum of absolute values in the output matrix. Data Type:void* /const void* */
+  HIPBLASLT_MATMUL_DESC_EPILOGUE_AUX_DATA_TYPE = 22,    /**<Type of the aux vector in the device memory. Default value is: HIPBLASLT_DATATYPE_INVALID (using D matrix type). Data Type:int32_t based on hipDataType*/
+  HIPBLASLT_MATMUL_DESC_A_SCALE_MODE = 31,                   /**<Scaling mode that defines how the matrix scaling factor for matrix A is interpreted. See hipblasLtMatmulMatrixScale_t */
+  HIPBLASLT_MATMUL_DESC_B_SCALE_MODE = 32,                   /**<Scaling mode that defines how the matrix scaling factor for matrix B is interpreted. See hipblasLtMatmulMatrixScale_t */
   HIPBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_A_EXT = 100,     /**<Compute input A types. Defines the data type used for the input A of matrix multiply. */
   HIPBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_B_EXT,           /**<Compute input B types. Defines the data type used for the input B of matrix multiply. */
+  HIPBLASLT_MATMUL_DESC_A_SCALE_POINTER_VEC_EXT,        /**<Equivalent to HIPBLASLT_MATMUL_DESC_A_SCALE_POINTER but in vector. Default value: NULL Type: void* /const void* */
+  HIPBLASLT_MATMUL_DESC_B_SCALE_POINTER_VEC_EXT,        /**<Equivalent to HIPBLASLT_MATMUL_DESC_B_SCALE_POINTER but in vector. Default value: NULL Type: void* /const void* */
   HIPBLASLT_MATMUL_DESC_MAX,
 } hipblasLtMatmulDescAttributes_t;
 
@@ -172,7 +198,9 @@ typedef enum {
   HIPBLASLT_MATMUL_PREF_MAX = 2
 } hipblasLtMatmulPreferenceAttributes_t;
 
-/** Enum for data ordering */
+/*! \ingroup types_module
+ *  \brief Enum for data ordering.
+ */
 typedef enum {
   /** Column-major
    *
@@ -184,6 +212,24 @@ typedef enum {
    * Leading dimension is the stride (in elements) to the beginning of next row in memory.
    */
   HIPBLASLT_ORDER_ROW = 1,
+  /**
+   * Data is ordered in column-major ordered tiles of composite tiles with total 16 columns and 64 rows.
+   * A tile is composed of 4 inner tiles in column-major with total 16 rows and 16 columns.
+   * Element offset within the tile is calculated as row%16+16*col+(row/16)*16*16.
+   * Note that for this order, the number of columns(rows) of the tensor has to be multiple of 16(64) or
+   * pre-padded to 16(64).
+   */
+  HIPBLASLT_ORDER_COL16_4R16 = 100,
+  /**
+   * Data is ordered in column-major ordered tiles of composite tiles with total 16 columns and 32 rows.
+   * A tile is composed of 4 inner tiles in column-major with total 8 rows and 16 columns.
+   * Element offset within the tile is calculated as row%8+8*col+(row/8)*16*8.
+   * Note that for this order, the number of columns(rows) of the tensor has to be multiple of 16(32) or
+   * pre-padded to 16(32).
+   */
+  HIPBLASLT_ORDER_COL16_4R8 = 101,
+  HIPBLASLT_ORDER_COL16_4R4 = 102,
+  HIPBLASLT_ORDER_COL16_4R2 = 103
 } hipblasLtOrder_t;
 
 /** Matrix transform descriptor attributes to define details of the operation.
@@ -346,7 +392,7 @@ hipblasStatus_t hipblasLtGetArchName(char** archName);
  * opaque structure holding the hipBLASLt library context. It allocates light
  * hardware resources on the host and device, and must be called prior to making
  * any other hipBLASLt library calls. The hipBLASLt library context is tied to
- * the current CUDA device. To use the library on multiple devices, one
+ * the current ROCm device. To use the library on multiple devices, one
  * hipBLASLt handle should be created for each device.
  *
  *  @param[out]
@@ -435,7 +481,7 @@ hipblasStatus_t hipblasLtMatrixLayoutDestroy(const hipblasLtMatrixLayout_t matLa
  *  matLayout  Pointer to the previously created structure holding the matrix
  * mdescriptor queried by this function. See \ref hipblasLtMatrixLayout_t.
  *  @param[in]
- *  attr  	The attribute that will be set by this function. See \ref
+ *  attr    The attribute that will be set by this function. See \ref
  * hipblasLtMatrixLayoutAttribute_t.
  *  @param[in]
  *  buf  The value to which the specified attribute should be set.
@@ -463,7 +509,7 @@ hipblasStatus_t hipblasLtMatrixLayoutSetAttribute(hipblasLtMatrixLayout_t       
  *  matLayout  Pointer to the previously created structure holding the matrix
  * descriptor queried by this function. See \ref hipblasLtMatrixLayout_t.
  *  @param[in]
- *  attr  	    The attribute that will be retrieved by this function. See
+ *  attr        The attribute that will be retrieved by this function. See
  * \ref hipblasLtMatrixLayoutAttribute_t.
  *  @param[out]
  *  buf         Memory address containing the attribute value retrieved by this
@@ -541,7 +587,7 @@ hipblasStatus_t hipblasLtMatmulDescDestroy(const hipblasLtMatmulDesc_t matmulDes
  *  matmulDesc  Pointer to the previously created structure holding the matrix
  * multiply descriptor queried by this function. See \ref hipblasLtMatmulDesc_t.
  *  @param[in]
- *  attr  	The attribute that will be set by this function. See \ref
+ *  attr    The attribute that will be set by this function. See \ref
  * hipblasLtMatmulDescAttributes_t.
  *  @param[in]
  *  buf  The value to which the specified attribute should be set.
@@ -569,7 +615,7 @@ hipblasStatus_t hipblasLtMatmulDescSetAttribute(hipblasLtMatmulDesc_t           
  *  matmulDesc  Pointer to the previously created structure holding the matrix
  * multiply descriptor queried by this function. See \ref hipblasLtMatmulDesc_t.
  *  @param[in]
- *  attr  	    The attribute that will be retrieved by this function. See
+ *  attr        The attribute that will be retrieved by this function. See
  * \ref hipblasLtMatmulDescAttributes_t.
  *  @param[out]
  *  buf         Memory address containing the attribute value retrieved by this
@@ -642,7 +688,7 @@ hipblasStatus_t hipblasLtMatmulPreferenceDestroy(const hipblasLtMatmulPreference
  * multiply preferences descriptor queried by this function. See \ref
  * hipblasLtMatmulPreference_t
  *  @param[in]
- *  attr  	    The attribute that will be set by this function. See \ref
+ *  attr        The attribute that will be set by this function. See \ref
  * hipblasLtMatmulPreferenceAttributes_t.
  *  @param[in]
  *  buf         The value to which the specified attribute should be set.
@@ -671,7 +717,7 @@ hipblasStatus_t hipblasLtMatmulPreferenceSetAttribute(hipblasLtMatmulPreference_
  * multiply heuristic search preferences descriptor queried by this function.
  * See \ref hipblasLtMatmulPreference_t.
  *  @param[in]
- *  attr  	    The attribute that will be retrieved by this function. See
+ *  attr        The attribute that will be retrieved by this function. See
  * \ref hipblasLtMatmulPreferenceAttributes_t.
  *  @param[out]
  *  buf         Memory address containing the attribute value retrieved by this
@@ -704,7 +750,8 @@ hipblasStatus_t hipblasLtMatmulPreferenceGetAttribute(hipblasLtMatmulPreference_
  *  This function retrieves the possible algorithms for the matrix multiply
  * operation hipblasLtMatmul() function with the given input matrices A, B and
  * C, and the output matrix D. The output is placed in heuristicResultsArray[]
- * in the order of increasing estimated compute time.
+ * in the order of increasing estimated compute time. Note that the wall duration
+ * increases if the requestedAlgoCount increases.
  *
  *  @param[in]
  *  handle                  Pointer to the allocated hipBLASLt handle for the

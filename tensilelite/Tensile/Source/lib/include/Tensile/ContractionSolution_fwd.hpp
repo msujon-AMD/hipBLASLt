@@ -26,7 +26,8 @@
 
 #pragma once
 
-namespace Tensile
+namespace TensileLite
 {
     class ContractionSolution;
+    struct SizeMapping;
 }

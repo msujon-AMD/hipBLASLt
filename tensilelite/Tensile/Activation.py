@@ -24,13 +24,18 @@ import ctypes
 import math
 import struct
 from collections import OrderedDict
+from copy import deepcopy
+from enum import Enum, IntFlag
+from typing import List, Union
 
-from .TensileInstructions import Module, TextBlock, HolderContainer, RegisterContainer, \
-                          VCC, EXEC, vgpr, sgpr, Holder, fastdeepcopy, DataType, SNop, \
-                          TensileInstructions
-from .TensileInstructions.Enums import *
+from rocisa import rocIsa
+from rocisa.code import Module, TextBlock
+from rocisa.container import VCC, EXEC, vgpr, sgpr, HolderContainer, RegisterContainer, Holder
+from rocisa.enum import InstType
+
+from .TensileInstructions import DataType
 from .TensileInstructions.Instructions import *
-from .Common import printExit, printWarning, globalParameters
+from Tensile.Common.Utilities import printExit, printWarning
 
 from dataclasses import dataclass, field
 
@@ -123,6 +128,12 @@ class ActivationType:
         GRADONLY = 1
         BOTH = 2
 
+    # Use bit mask to maintain the supported information.
+    class SupportedBy(IntFlag):
+        HIPBLASLT = 0b01
+        TENSILE = 0b10
+        ALL = 0b11
+
     stringList = ['alpha', 'beta', 'gamma', 'delta' ]
     # Exp is only for verification. So we will not return exp in the supported list.
                                                                              # Half,Single,Double,BFloat16,  Int8, Int16, Int32
@@ -130,19 +141,48 @@ class ActivationType:
 
     # Note: The BFloat16 gemm uses Single type activations. The int8 gemm uses int32 type activations.
                                                                                  # Half,Single,Double,BFloat16,  Int8, Int16, Int32
-    lookup = OrderedDict([('none',        ActivationTypeRegister('none', False, 0,        True,  True,  True,    True,  True,  True,  True)), \
-                          ('abs',         ActivationTypeRegister('abs', False, 0,         True,  True,  True,    True, False, False,  True)), \
-                          ('clippedrelu', ActivationTypeRegister('clippedrelu', False, 2, True,  True,  True,   False, False, False,  True)), \
-                          ('gelu',        ActivationTypeRegister('gelu', False, 0,        True,  True, False,   False, False, False, False)), \
-                          ('leakyrelu',   ActivationTypeRegister('leakyrelu', False, 1,   True,  True,  True,   False, False, False,  True)), \
-                          ('relu',        ActivationTypeRegister('relu', False, 0,        True,  True,  True,   False, False, False,  True)), \
-                          ('sigmoid',     ActivationTypeRegister('sigmoid', False, 0,     True,  True, False,   False, False, False, False)), \
-                          ('tanh',        ActivationTypeRegister('tanh', False, 2,        True,  True, False,   False, False, False, False)), \
-                          ('dgelu',       ActivationTypeRegister('dgelu', True, 0,       False,  True, False,   False, False, False, False)), \
-                          ('geluscaling', ActivationTypeRegister('geluscaling', False, 1, True,  True, False,   False, False, False, False)), \
-                          ('silu',        ActivationTypeRegister('silu', False, 0,        True,  True, False,   False, False, False, False)), \
-                          ('all',         ActivationTypeRegister('all', False, 0)) ])
-
+    lookup = OrderedDict([('none', { \
+                            'instance': ActivationTypeRegister('none', False, 0,        True,  True,  True,    True,  True,  True,  True), \
+                            'supported_by': SupportedBy.TENSILE | SupportedBy.HIPBLASLT}), \
+                          ('abs', { \
+                            'instance': ActivationTypeRegister('abs', False, 0,         True,  True,  True,    True, False, False,  True), \
+                            'supported_by': SupportedBy.TENSILE}), \
+                          ('clippedrelu', { \
+                            'instance': ActivationTypeRegister('clippedrelu', False, 2, True,  True,  True,   False, False, False,  True), \
+                            'supported_by': SupportedBy.TENSILE}), \
+                          ('gelu', { \
+                            'instance': ActivationTypeRegister('gelu', False, 0,        True,  True, False,   False, False, False, False), \
+                            'supported_by': SupportedBy.TENSILE | SupportedBy.HIPBLASLT}), \
+                          ('leakyrelu', { \
+                            'instance': ActivationTypeRegister('leakyrelu', False, 1,   True,  True,  True,   False, False, False,  True), \
+                            'supported_by': SupportedBy.TENSILE}), \
+                          ('relu', { \
+                            'instance': ActivationTypeRegister('relu', False, 0,        True,  True,  True,   False, False, False,  True), \
+                            'supported_by': SupportedBy.TENSILE | SupportedBy.HIPBLASLT}), \
+                          ('sigmoid', { \
+                            'instance': ActivationTypeRegister('sigmoid', False, 0,     True,  True, False,   False, False, False, False), \
+                            'supported_by': SupportedBy.TENSILE}), \
+                          ('tanh', {  \
+                            'instance': ActivationTypeRegister('tanh', False, 2,        True,  True, False,   False, False, False, False), \
+                            'supported_by': SupportedBy.TENSILE}), \
+                          ('dgelu', { \
+                            'instance': ActivationTypeRegister('dgelu', True, 0,       False,  True, False,   False, False, False, False), \
+                            'supported_by': SupportedBy.TENSILE | SupportedBy.HIPBLASLT}), \
+                          ('geluscaling', { \
+                            'instance': ActivationTypeRegister('geluscaling', False, 1, True,  True, False,   False, False, False, False), \
+                            'supported_by': SupportedBy.TENSILE}), \
+                          ('silu', { \
+                            'instance': ActivationTypeRegister('silu', False, 0,        True,  True, False,   False, False, False, False), \
+                            'supported_by': SupportedBy.TENSILE | SupportedBy.HIPBLASLT}), \
+                          ('swish', { \
+                            'instance': ActivationTypeRegister('swish', False, 1,        True,  True, False,   False, False, False, False), \
+                            'supported_by': SupportedBy.TENSILE}), \
+                          ('hipblaslt_all', { \
+                            'instance': ActivationTypeRegister('hipblaslt_all', False, 0), \
+                            'supported_by': SupportedBy.HIPBLASLT}), \
+                          ('all', { \
+                            'instance': ActivationTypeRegister('all', False, 0), \
+                            'supported_by': SupportedBy.TENSILE | SupportedBy.HIPBLASLT}) ])
     def __init__(self, value):
         if isinstance(value, str):
             strValue = value.lower()
@@ -166,16 +206,22 @@ class ActivationType:
             return False
 
     def getAdditionalArgNum(self, exportType: Export=Export.NORMAL):
-        if self.value == 'all':
+        if self.value in ['all', 'hipblaslt_all']:
             maxArgNum = 0
-            for _, activationInst in self.lookup.items():
+            for _, value in self.lookup.items():
+                activationInst = value['instance']
                 if self.passActivation(activationInst.isGradient, exportType):
                     continue
                 maxArgNum = max(maxArgNum, activationInst.extraArgs)
             return maxArgNum
         elif self.value in self.lookup:
-            return self.lookup[self.value].extraArgs
+            return self.lookup[self.value]['instance'].extraArgs
         return 0
+    # Check if the given components are supported by the configuration using a bit mask.
+    # This function performs a bitwise AND operation between the config and components
+    # to determine if the specified components are included in the configuration.
+    def fitSupported(self, config: SupportedBy, components: SupportedBy):
+        return (config & components)
     def getAdditionalArgStringList(self, addPrefix=True):
         list = []
         for i in range(0, self.getAdditionalArgNum()):
@@ -188,13 +234,15 @@ class ActivationType:
     def getEnumIndex(cls, enumStr):
         return list(cls.lookup.keys()).index(enumStr)
     @classmethod
-    def getEnumStrList(cls, dataType, includeNone = True, exportType: Export=Export.NORMAL):
+    def getEnumStrList(cls, dataType, configSupported, includeNone = True, exportType: Export=Export.NORMAL):
         enumList = []
-        for key, activationInst in cls.lookup.items():
+        for key, value in cls.lookup.items():
+            activationInst = value['instance']
+            components = value['supported_by']
             if cls.passActivation(cls, activationInst.isGradient, exportType):
                 continue
-            if (((key != 'none') or includeNone) and (key != 'all')):
-                if activationInst.typeAvailable(dataType):
+            if (((key != 'none') or includeNone) and (key not in ['all', 'hipblaslt_all'])):
+                if (activationInst.typeAvailable(dataType)) and (cls.fitSupported(cls, configSupported, components)) :
                     enumList.append(key)
         if not enumList:
             printWarning("No available activation for this data type %s.\n"%str(dataType))
@@ -283,6 +331,9 @@ class ActivationModule:
         self.enableGuard = False
         self.isAlt       = False
 
+    def __reduce__(self):
+        return (ActivationModule, ())
+
     # Public function
     def getModule(self, cDataType, activationType, vgprIn, vgprOut):
         if self.useCache:
@@ -314,6 +365,8 @@ class ActivationModule:
             module = self.getDGeluModule(cDataType, vgprIn, vgprOut)
         elif (activationType == 'silu'):
             module = self.getSiluModule(cDataType, vgprIn, vgprOut)
+        elif (activationType == 'swish'):
+            module = self.getSwishModule(cDataType, vgprIn, vgprOut, "activationAlpha")
         elif (activationType == 'none'):
             return Module("No activation")
         else:
@@ -327,7 +380,12 @@ class ActivationModule:
 
     def getAllGprUsage(self, cDataType, actType, exportType: ActivationType.Export=ActivationType.Export.NORMAL) -> dict:
         usage = {}
-        enumList = ActivationType.getEnumStrList(cDataType, exportType=exportType) if actType == 'all' else [str(actType)]
+        if actType == 'all':
+            enumList = ActivationType.getEnumStrList(cDataType, configSupported=ActivationType.SupportedBy.ALL, exportType=exportType)
+        elif actType == 'hipblaslt_all':
+            enumList = ActivationType.getEnumStrList(cDataType, configSupported=ActivationType.SupportedBy.HIPBLASLT, exportType=exportType)
+        else:
+            enumList = [str(actType)]
         for enumStr in enumList:
             _ = self.getModule(cDataType, enumStr, 0, 1) # dummy vgpr
             usage[enumStr] = {"vgpr": self.vgprCounter, "sgpr": self.sgprCounter}
@@ -460,7 +518,7 @@ class ActivationModule:
         return module
 
     def getExpModule(self, cDataType, vgprIn, vgprOut):
-        ti = TensileInstructions()
+        ti = rocIsa.getInstance()
         module = Module("Exp")
         if cDataType.isHalf():
             sgprMagic = self.getSgpr(1)
@@ -609,7 +667,7 @@ class ActivationModule:
         return module
 
     def getSigmoidModule(self, cDataType, vgprIn, vgprOut):
-        ti = TensileInstructions()
+        ti = rocIsa.getInstance()
         self.needCombine = True
         module = Module("Sigmoid")
         if cDataType.isHalf():
@@ -644,7 +702,7 @@ class ActivationModule:
         return module
 
     def getTanhModule(self, cDataType, vgprIn, vgprOut, activationAlpha, activationBeta):
-        ti = TensileInstructions()
+        ti = rocIsa.getInstance()
         self.needCombine = True
         module = Module("Tanh")
         if cDataType.isHalf():
@@ -704,7 +762,7 @@ class ActivationModule:
         return module
 
     def getDGeluModule(self, cDataType, vgprIn, vgprOut):
-        ti = TensileInstructions()
+        ti = rocIsa.getInstance()
         self.needCombine = True
         module = Module("Gradient Gelu")
         # x1 = (0.0535161 * pow(x, 3) + 0.398942 * x)
@@ -785,6 +843,25 @@ class ActivationModule:
         module.add(mulFunction(dst=self.vgprPrefix(vgprOut), src0=self.vgprPrefix(vgprIn), src1=self.vgprPrefix(Holder(idx=vgprTemp)), comment="x / (1 + exp(-x))"))
         return module
 
+    def getSwishModule(self, cDataType, vgprIn, vgprOut, activationAlpha):
+        self.needCombine = True
+        module = Module("Swish")
+        if cDataType.isHalf():
+            if self.usePK:
+                mulFunction = VMulPKF16
+            else:
+                mulFunction = VMulF16
+        elif cDataType.isSingle():
+            mulFunction = VMulF32
+        else:
+            raise RuntimeError("Unsupported data type %s."%cDataType.toDevice("HIP"))
+        vgprTempIn = self.getVgpr(1)
+        vgprTempOut = self.getVgpr(1)
+        module.add(mulFunction(dst=self.vgprPrefix(Holder(idx=vgprTempIn)), src0=self.vgprPrefix(vgprIn), src1=sgpr(activationAlpha), comment="x * beta"))
+        module.addModuleAsFlatItems(self.getSigmoidModule(cDataType, Holder(idx=vgprTempIn), Holder(idx=vgprTempOut)))
+        module.add(mulFunction(dst=self.vgprPrefix(vgprOut), src0=self.vgprPrefix(vgprIn), src1=self.vgprPrefix(Holder(idx=vgprTempOut)), comment="x / (1 + exp(-x * beta))"))
+        return module
+
     ################################################################################
     ################################################################################
     ###
@@ -798,7 +875,7 @@ class ActivationModule:
         if activationType not in self.cacheDict:
             self.cacheDict[activationType] = {}
         actDict = self.cacheDict[activationType]
-        copied = fastdeepcopy(module)
+        copied = deepcopy(module)
         # Get reg name
         regName = self.vgprPrefixFormat.split("+")[0] if self.vgprPrefixFormat else ""
         vgprIdxList = createVgprIdxList(copied, [vgprIn, vgprOut], regName)
@@ -821,9 +898,9 @@ class ActivationModule:
                                       enableGuard=self.enableGuard, prefix=self.vgprPrefixFormat):
                         if self.vgprPrefixFormat:
                             for vgpr in actInfo.vgprIdxList[0]:
-                                vgpr.regName.offsets[0] = vgprIn
+                                vgpr.regName.setOffset(0, vgprIn)
                             for vgpr in actInfo.vgprIdxList[1]:
-                                vgpr.regName.offsets[0] = vgprOut
+                                vgpr.regName.setOffset(0, vgprOut)
                         else:
                             for vgpr in actInfo.vgprIdxList[0]:
                                 vgpr.regIdx = vgprIn
@@ -831,7 +908,7 @@ class ActivationModule:
                                 vgpr.regIdx = vgprOut
                         self.vgprCounter = actInfo.vgprCounter
                         self.sgprCounter = actInfo.sgprCounter
-                        return fastdeepcopy(actInfo.module)
+                        return deepcopy(actInfo.module)
         return None
 
 ################################################################################
@@ -876,7 +953,7 @@ def RemoveEmptyBlocks(module):
     for idx, item in enumerate(module.items()):
         if isinstance(item, Module):
             newItem = RemoveEmptyBlocks(item)
-            module.items()[idx] = newItem
+            module.setItem(idx, newItem)
     if len(module.items()) == 1 and isinstance(module.items()[0], Module):
         return module.items()[0]
     return module
@@ -915,7 +992,7 @@ def FuseInstruction(currentInst, moduleAndIndex, fuseDebug):
                     # used before the current instruction
                     if not FindAssignAndUse(oldInst, currentInst, outVgpr, outVgpr):
                         newInst = type(oldInst)(oldInst.dst, *oldInst.srcs, oldInst.sdwa)
-                        newInst.srcs[2] = addConst + newInst.srcs[2]
+                        newInst.setSrc(2, addConst + newInst.srcs[2])
                         newInst.comment += " ( + 1 (fused))"
                         replaceInst(currentInst, newInst, fuseDebug)
                         removeOldInst(oldInst, currentInst, newInst, fuseDebug)
@@ -965,11 +1042,11 @@ def FuseInstruction(currentInst, moduleAndIndex, fuseDebug):
                                 newValue = param * mulConst
                                 formatting = " (fused %f)" if isinstance(param, float) else " (fused %d)"
                                 if newFuseInst:
-                                    newFuseInst.srcs[0] = newValue
-                                    newInst.srcs[paramIdx] = newFuseInst.dst
+                                    newFuseInst.setSrc(0, newValue)
+                                    newInst.setSrc(paramIdx, newFuseInst.dst)
                                     newFuseInst.comment += formatting%newValue
                                 else:
-                                    newInst.srcs[paramIdx] = newValue
+                                    newInst.setSrc(paramIdx, newValue)
                                 newInst.comment += formatting%newValue
                                 replaceInst(currentInst, newInst, fuseDebug)
                                 removeOldInst(oldInst, currentInst, newInst, fuseDebug)
@@ -1062,7 +1139,7 @@ def removeOldInst(removeInst, dstInst, fusedInst, debug):
             if debug:
                 tb = TextBlock("\n/* Fused to block %s + %s -> %s */\n"%(str(removeInst), str(dstInst), str(fusedInst)))
                 tb.name = __FUSE_MAGIC_NAME__
-                module.items()[idx] = tb
+                module.setItem(idx, tb)
             else:
                 targetIdx = idx
             break
@@ -1120,20 +1197,20 @@ def HexToStr(cDataType, isPack, *args):
 
 def ConvertCoeffToHex(module, cDataType, isPack):
     if (module.name == "Exp"):
-        param = module.items()[0].srcs[0]
-        module.items()[0].srcs[0] = getMagic(cDataType, param, isPack)
+        param = module.getItem(0).srcs[0]
+        module.getItem(0).setSrc(0, getMagic(cDataType, param, isPack))
         return module
     for itemIdx, item in enumerate(module.items()):
         if isinstance(item, Module):
             newItem = ConvertCoeffToHex(item, cDataType, isPack)
-            module.items()[itemIdx] = newItem
+            module.setItem(itemIdx, newItem)
     return module
 
 def HolderToGpr(module, idx, pf):
     for itemIdx, item in enumerate(module.items()):
         if isinstance(item, Module):
             newItem = HolderToGpr(item, idx, pf)
-            module.items()[itemIdx] = newItem
+            module.setItem(itemIdx, newItem)
         elif isinstance(item, SNop):
             pass
         elif isinstance(item, Instruction):
@@ -1144,7 +1221,7 @@ def HolderToGpr(module, idx, pf):
                 for itemIdx, param in enumerate(item.srcs):
                     if isinstance(param, HolderContainer) and param.regType == pf:
                         param.setRegNum(idx)
-                        item.srcs[itemIdx] = param.getCopiedRC()
+                        item.setSrc(itemIdx, param.getCopiedRC())
     return module
 
 def addSpace(alignStr, str):
@@ -1272,6 +1349,12 @@ class ActivationInline:
       kStr += self.getActivationAsmStr(activation, module, (len(asm) * " "))
       kStr += addSpace(asm, ": \"+v\"(value) : \n")
       kStr += self.getRequiredRegStr(asm, activation.vgprCounter, activation.sgprCounter)
+    elif (activationType == 'swish'):
+      kStr += (asm + " // Swish\n")
+      module = activation.getSwishModule(self.dataType, 0, 0, 1)
+      kStr += self.getActivationAsmStr(activation, module, (len(asm) * " "))
+      kStr += addSpace(asm, ": \"+v\"(value) : \"s\"(alpha)\n")
+      kStr += self.getRequiredRegStr(asm, activation.vgprCounter, activation.sgprCounter)
     else:
       if (activationType != 'none'):
         raise RuntimeError("Unrecognized type %s."%activationType)
@@ -1308,7 +1391,7 @@ def createVgprIdxList(module, vgprList: list, regName):
             for param in item.getParams():
                 if isinstance(param, RegisterContainer):
                     for index, vgprIdx in enumerate(vgprList):
-                        if param.regName and (param.regName.name == regName) and (param.regName.offsets[0] == vgprIdx):
+                        if param.regName and (param.regName.name == regName) and (param.regName.getOffset()[0] == vgprIdx):
                             vlist[index].append(param)
                         elif param.regIdx == vgprIdx:
                             vlist[index].append(param)

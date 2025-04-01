@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,6 +28,23 @@
 
 #include <hipblaslt/hipblaslt.h>
 #include <iostream>
+#include <regex>
+#include <string_view>
+
+/*! \brief device matches pattern */
+inline bool gpu_arch_match(std::string_view gpu_arch, std::string_view pattern)
+{
+    if(!pattern.length())
+    {
+        return true;
+    }
+
+    constexpr char    prefix[]   = "gfx";
+    const std::size_t prefix_len = std::string_view(prefix).length();
+    gpu_arch.remove_prefix(prefix_len);
+    std::regex arch_regex(pattern.data());
+    return std::regex_search(gpu_arch.data(), arch_regex);
+}
 
 HIPBLASLT_EXPORT
 constexpr const char* hipblas_status_to_string(hipblasStatus_t status)
@@ -68,8 +85,9 @@ constexpr const char* hipblas_operation_to_string(hipblasOperation_t value)
         return "T";
     case HIPBLAS_OP_C:
         return "C";
+    default:
+        return "invalid";
     }
-    return "invalid";
 }
 
 HIPBLASLT_EXPORT
@@ -87,7 +105,7 @@ constexpr hipblasOperation_t char_to_hipblas_operation(char value)
     case 'c':
         return HIPBLAS_OP_C;
     default:
-        return static_cast<hipblasOperation_t>(0);
+        return HIPBLASLT_OPERATION_INVALID;
     }
 }
 
@@ -110,9 +128,21 @@ constexpr const char* hip_datatype_to_string(hipDataType type)
     case HIP_R_32I:
         return "i32_r";
     case HIP_R_8F_E4M3_FNUZ:
-        return "f8_r";
+        return "f8_fnuz_r";
     case HIP_R_8F_E5M2_FNUZ:
+        return "bf8_fnuz_r";
+#ifdef ROCM_USE_FLOAT8
+    case HIP_R_8F_E4M3:
+        return "f8_r";
+    case HIP_R_8F_E5M2:
         return "bf8_r";
+#endif
+    case HIP_R_6F_E2M3_EXT:
+        return "f6_r";
+    case HIP_R_6F_E3M2_EXT:
+        return "bf6_r";
+    case HIP_R_4F_E2M1_EXT:
+        return "f4_r";
     default:
         return "non-supported type";
     }
@@ -125,6 +155,8 @@ constexpr const char* hipblas_computetype_to_string(hipblasComputeType_t type)
 {
     switch(type)
     {
+    case HIPBLAS_COMPUTE_16F:
+        return "f16_r";
     case HIPBLAS_COMPUTE_32F:
         return "f32_r";
     case HIPBLAS_COMPUTE_32F_FAST_TF32:
@@ -147,14 +179,44 @@ constexpr const char* hipblas_computetype_to_string(hipblasComputeType_t type)
 HIPBLASLT_EXPORT
 constexpr hipDataType string_to_hip_datatype(const std::string& value)
 {
+    if (value == "f8_fnuz_r")
+    {
+        return HIP_R_8F_E4M3_FNUZ;
+    }
+    else if (value == "bf8_fnuz_r")
+    {
+        return HIP_R_8F_E5M2_FNUZ;
+    }
+
+#ifdef ROCM_USE_FLOAT8
+    if (value == "f8_r")
+    {
+        return HIP_R_8F_E4M3;
+    }
+    else if (value == "bf8_r")
+    {
+        return HIP_R_8F_E5M2;
+    }
+#else
+    if (value == "f8_r")
+    {
+        return HIP_R_8F_E4M3_FNUZ;
+    }
+    else if (value == "bf8_r")
+    {
+        return HIP_R_8F_E5M2_FNUZ;
+    }
+#endif
+
     return
         value == "f32_r" || value == "s" ? HIP_R_32F  :
         value == "f64_r" || value == "d" ? HIP_R_64F  :
         value == "f16_r" || value == "h" ? HIP_R_16F  :
         value == "bf16_r"                ? HIP_R_16BF  :
-        value == "f8_r"                ? HIP_R_8F_E4M3_FNUZ  :
-        value == "bf8_r"                ? HIP_R_8F_E5M2_FNUZ  :
         value == "i8_r" || value == "i8" ? HIP_R_8I  :
+        value == "f6_r"                  ? static_cast<hipDataType>(HIP_R_6F_E2M3_EXT) :
+        value == "bf6_r"                 ? static_cast<hipDataType>(HIP_R_6F_E3M2_EXT) :
+        value == "f4_r"                  ? static_cast<hipDataType>(HIP_R_4F_E2M1_EXT) :
         value == "i32_r" || value == "i" ? HIP_R_32I  :
         HIPBLASLT_DATATYPE_INVALID;
 }
@@ -163,9 +225,9 @@ HIPBLASLT_EXPORT
 constexpr hipDataType string_to_hip_datatype_assert(const std::string& value)
 {
     auto datatype = string_to_hip_datatype(value);
-    if(static_cast<int>(datatype) == 0)
+    if(datatype == HIPBLASLT_DATATYPE_INVALID)
     {
-        std::cout << "The supported types are f32_r, f64_r, f16_r, bf16_r, f8_r, bf8_r, i8_r, i32_r." << std::endl;
+        std::cout << "The supported types are f32_r, f64_r, f16_r, bf16_r, f8_r, bf8_r, f6_r, bf6_r, f4_r, i8_r, i32_r." << std::endl;
         exit(1);
     }
     return datatype;
@@ -181,14 +243,14 @@ constexpr hipblasComputeType_t string_to_hipblas_computetype(const std::string& 
         value == "i32_r" || value == "i" ? HIPBLAS_COMPUTE_32I :
         value == "f32_f16_r" ? HIPBLAS_COMPUTE_32F_FAST_16F :
         value == "f32_bf16_r" ? HIPBLAS_COMPUTE_32F_FAST_16BF :
-        static_cast<hipblasComputeType_t>(0);
+        HIPBLASLT_COMPUTE_TYPE_INVALID;
 }
 
 HIPBLASLT_EXPORT
 constexpr hipblasComputeType_t string_to_hipblas_computetype_assert(const std::string& value)
 {
     auto computetytpe = string_to_hipblas_computetype(value);
-    if(static_cast<int>(computetytpe) == 0)
+    if(computetytpe == HIPBLASLT_COMPUTE_TYPE_INVALID)
     {
         std::cout << "The supported types are f32_r, xf32_r, f64_r, i32_r, f32_f16_r." << std::endl;
         exit(1);
@@ -211,6 +273,8 @@ constexpr hipblasLtEpilogue_t string_to_epilogue_type(const std::string& value)
         value == "HIPBLASLT_EPILOGUE_DGELU_BGRAD" ? HIPBLASLT_EPILOGUE_DGELU_BGRAD :
         value == "HIPBLASLT_EPILOGUE_BGRADA" ? HIPBLASLT_EPILOGUE_BGRADA :
         value == "HIPBLASLT_EPILOGUE_BGRADB" ? HIPBLASLT_EPILOGUE_BGRADB :
+        value == "HIPBLASLT_EPILOGUE_SWISH_EXT" ? HIPBLASLT_EPILOGUE_SWISH_EXT :
+        value == "HIPBLASLT_EPILOGUE_SWISH_BIAS_EXT" ? HIPBLASLT_EPILOGUE_SWISH_BIAS_EXT :
         value == "HIPBLASLT_EPILOGUE_DEFAULT" || value == "" ? HIPBLASLT_EPILOGUE_DEFAULT :
         static_cast<hipblasLtEpilogue_t>(0);
 }
@@ -278,6 +342,18 @@ __host__ __device__ inline bool hipblaslt_isnan(hipblaslt_bf8_fnuz arg)
 {
     return arg.is_nan();
 }
+
+#ifdef ROCM_USE_FLOAT8
+__host__ __device__ inline bool hipblaslt_isnan(hipblaslt_f8 arg)
+{
+    return arg.is_nan();
+}
+
+__host__ __device__ inline bool hipblaslt_isnan(hipblaslt_bf8 arg)
+{
+    return arg.is_nan();
+}
+#endif
 
 /*******************************************************************************
  * \brief  returns true if arg is Infinity

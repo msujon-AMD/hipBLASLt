@@ -3,7 +3,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -95,6 +95,11 @@ struct _rocblaslt_handle
     void* Synchronizer = nullptr;
     // pointer mode ; default mode is host
     rocblaslt_pointer_mode pointer_mode = rocblaslt_pointer_mode_host;
+
+#ifdef USE_ROCROLLER
+    void* rocroller_handle = nullptr;
+    int   useRocRoller     = -1;
+#endif
 };
 
 /********************************************************************************
@@ -143,51 +148,70 @@ struct _rocblaslt_matmul_desc
     hipblasOperation_t op_B = HIPBLAS_OP_N;
     // epilogue operation
     rocblaslt_epilogue epilogue = ROCBLASLT_EPILOGUE_DEFAULT;
+    // alpha,beta pointer mode
+    rocblaslt_pointer_mode pointermode = rocblaslt_pointer_mode_host;
     // bias vector pointer
-    void*       bias        = nullptr;
-    void*       scaleA      = nullptr;
-    void*       scaleB      = nullptr;
-    void*       scaleC      = nullptr;
-    void*       scaleD      = nullptr;
-    void*       scaleE      = nullptr;
-    void*       pointermode = nullptr;
-    void*       amax_ptr    = nullptr;
-    hipDataType bias_type   = HIPBLASLT_DATATYPE_INVALID;
+    void*       bias      = nullptr;
+    void*       scaleA    = nullptr;
+    void*       scaleB    = nullptr;
+    void*       scaleC    = nullptr;
+    void*       scaleD    = nullptr;
+    void*       scaleE    = nullptr;
+    void*       amaxD     = nullptr;
+    hipDataType bias_type = HIPBLASLT_DATATYPE_INVALID;
     // E
-    void*   e        = nullptr;
-    int64_t lde      = 0;
-    int64_t stride_e = 0;
+    void*       e        = nullptr;
+    hipDataType aux_type = HIPBLASLT_DATATYPE_INVALID;
+    int64_t     lde      = 0;
+    int64_t     stride_e = 0;
     //
     rocblaslt_compute_type compute_type;
     rocblaslt_compute_type compute_type_original;
-    hipDataType compute_input_typeA;
-    hipDataType compute_input_typeB;
+    hipDataType            compute_input_typeA;
+    hipDataType            compute_input_typeB;
     hipDataType            scale_type = HIPBLASLT_DATATYPE_INVALID;
+
+    RocblasltContractionProblem::ScalingFormat scaleAType
+        = RocblasltContractionProblem::ScalingFormat::None;
+    RocblasltContractionProblem::ScalingFormat scaleBType
+        = RocblasltContractionProblem::ScalingFormat::None;
+
+    uint32_t scaleABlockRowSize = 0;
+    uint32_t scaleABlockColSize = 0;
+    uint32_t scaleBBlockRowSize = 0;
+    uint32_t scaleBBlockColSize = 0;
 
     std::shared_ptr<void> m_data; // Tensile data
 
     void copy(const _rocblaslt_matmul_desc& src)
     {
-        this->op_A         = src.op_A;
-        this->op_B         = src.op_B;
-        this->epilogue     = src.epilogue;
-        this->bias         = src.bias;
-        this->scaleA       = src.scaleA;
-        this->scaleB       = src.scaleB;
-        this->scaleC       = src.scaleC;
-        this->scaleD       = src.scaleD;
-        this->scaleE       = src.scaleE;
-        this->pointermode  = src.pointermode;
-        this->amax_ptr     = src.amax_ptr;
-        this->bias_type    = src.bias_type;
-        this->e            = src.e;
-        this->lde          = src.lde;
-        this->stride_e     = src.stride_e;
-        this->compute_type = src.compute_type;
+        this->op_A                  = src.op_A;
+        this->op_B                  = src.op_B;
+        this->epilogue              = src.epilogue;
+        this->bias                  = src.bias;
+        this->scaleA                = src.scaleA;
+        this->scaleB                = src.scaleB;
+        this->scaleC                = src.scaleC;
+        this->scaleD                = src.scaleD;
+        this->scaleE                = src.scaleE;
+        this->scaleAType            = src.scaleAType;
+        this->scaleBType            = src.scaleBType;
+        this->scaleABlockRowSize    = src.scaleABlockRowSize;
+        this->scaleABlockColSize    = src.scaleABlockColSize;
+        this->scaleBBlockRowSize    = src.scaleBBlockRowSize;
+        this->scaleBBlockColSize    = src.scaleBBlockColSize;
+        this->pointermode           = src.pointermode;
+        this->amaxD                 = src.amaxD;
+        this->bias_type             = src.bias_type;
+        this->e                     = src.e;
+        this->aux_type              = src.aux_type;
+        this->lde                   = src.lde;
+        this->stride_e              = src.stride_e;
+        this->compute_type          = src.compute_type;
         this->compute_type_original = src.compute_type_original;
-        this->compute_input_typeA = src.compute_input_typeA;
-        this->compute_input_typeB = src.compute_input_typeB;
-        this->scale_type   = src.scale_type;
+        this->compute_input_typeA   = src.compute_input_typeA;
+        this->compute_input_typeB   = src.compute_input_typeB;
+        this->scale_type            = src.scale_type;
     }
 };
 

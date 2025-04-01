@@ -36,12 +36,13 @@ tags
 .vscode
 
 # build-in-source directory and documentation artifacts
-build/
+build*/
 _build/
 _images/
 _static/
 _templates/
 _toc.yml
+Tensile.egg-info
 
 # matrices
 *.csr
@@ -49,6 +50,9 @@ _toc.yml
 
 # Python
 **/__pycache__
+*.egg-info/
 
 #clangd
 .cache
+
+build_*

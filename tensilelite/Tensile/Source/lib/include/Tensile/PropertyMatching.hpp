@@ -41,11 +41,7 @@
 #include <Tensile/Properties.hpp>
 #include <Tensile/Utils.hpp>
 
-// #ifdef ENABLE_ROCTX
-// #include <roctracer/roctx.h>
-// #endif
-
-namespace Tensile
+namespace TensileLite
 {
     /**
      * \ingroup Tensile
@@ -72,9 +68,10 @@ namespace Tensile
         };
 
         template <typename Value>
-        struct KEntry
+        struct KBEntry
         {
             int   k;
+            int   b;
             Value value;
         };
 
@@ -290,7 +287,7 @@ namespace Tensile
                 float d{};
                 for(size_t i = 0; i < N; ++i)
                 {
-                    d += (p.coord[i] - q.coord[i]) * (p.coord[i] - q.coord[i]);
+                    d += static_cast<float>(p.coord[i] - q.coord[i]) * (p.coord[i] - q.coord[i]);
                 }
                 return d;
             }
@@ -319,7 +316,7 @@ namespace Tensile
         {
             using Base       = MatchingTable<Object, Value, ReturnValue>;
             using Entry      = MatchingTableEntry<Key, Value>;
-            using KEntry     = KEntry<Value>;
+            using KBEntry    = KBEntry<Value>;
             using Transform  = typename Base::Transform;
             using Properties = typename Base::Properties;
 
@@ -503,7 +500,7 @@ namespace Tensile
             ReturnValue nullValue;
 
             mutable KDTree<int32_t, 2>                                  kdTree;
-            std::map<std::tuple<int32_t, int32_t>, std::vector<KEntry>> kSolutionMap;
+            std::map<std::tuple<int32_t, int32_t>, std::vector<KBEntry>> kSolutionMap;
         };
 
         /**
@@ -960,7 +957,7 @@ namespace Tensile
             }
 
             template <bool T_Debug>
-            std::vector<ReturnValue> findBestKeyMatch_GridBased(Key const& key,
+            std::vector<ReturnValue> findBestKeyMatch_GridBased(Key const& key_orig,
                                                                 Transform  transform,
                                                                 int        numSolutions) const
             {
@@ -974,11 +971,17 @@ namespace Tensile
                 bool      Debug = T_Debug;
                 std::cout << std::setprecision(2) << std::fixed;
 
+                Key key = key_orig;
+
                 if(Debug::Instance().gridBasedKDTree())
                 {
                     // roctxRangePush("KDTree");
-                    auto compK = [](KEntry<Value> const& e, int const N) { return e.k < N; };
+                    auto compK = [](KBEntry<Value> const& e, int const N) { return e.k < N; };
+                    auto lowerB = [](KBEntry<Value> const& e, int const N) { return e.b < N; };
+                    auto upperB = [](int const N, KBEntry<Value> const& e) { return N < e.b; };
+kd_tree_batch_1_again:
                     auto k     = key.size() > 3 ? key[3] : key[2];
+                    auto                b     = key.size() > 3 ? key[2] : 1;
                     PointND<int32_t, 2> target;
                     target.coord[0] = key[0];
                     target.coord[1] = key[1];
@@ -1018,40 +1021,72 @@ namespace Tensile
                             std::make_tuple(result.node->pt.coord[0], result.node->pt.coord[1]));
                         if(iter != this->kSolutionMap.end())
                         {
-                            auto lower = std::lower_bound(
-                                iter->second.begin(), iter->second.end(), k, compK);
-                            if(lower != iter->second.end())
+                            if(b > 1 && iter->second.size() == 1)
                             {
-                                auto prev = lower == iter->second.begin() ? lower : lower--;
-                                if(prev != lower)
-                                {
-                                    if(std::abs(prev->k - k) < std::abs(lower->k - k))
-                                    {
-                                        lower = prev;
-                                    }
-                                }
-                                auto thisMatch = transform(lower->value);
-                                if(thisMatch)
-                                {
-                                    if(bestmatches.size())
-                                    {
-                                        if(std::find(
-                                               bestmatches.begin(), bestmatches.end(), thisMatch)
-                                           != bestmatches.end())
-                                        {
-                                            if(Debug)
-                                                std::cout << "Duplicated solution" << std::endl;
-                                            continue;
-                                        }
-                                    }
-                                    if(Debug)
-                                        std::cout
-                                            << "Final selected points: " << result.node->pt.coord[0]
-                                            << ", " << result.node->pt.coord[1]
-                                            << " K: " << lower->k << std::endl;
+                                if(key[0] > key[1])
+                                    key[0] = key[0] * key[2];
+                                else
+                                    key[1] = key[1] * key[2];
+                                key[2] = 1;
+                                goto kd_tree_batch_1_again;
+                            }
+                            auto bEnd = std::lower_bound(
+                                iter->second.begin(), iter->second.end(), b, lowerB);
+                            auto bStart = iter->second.begin();
+                            if(bEnd == iter->second.end()) // b is too large
+                            {
+                                auto bval = std::prev(bEnd)->b;
+                                bStart    = std::lower_bound(
+                                    iter->second.begin(), iter->second.end(), bval, lowerB);
+                            }
+                            else if(bEnd == iter->second.begin()) // b is 1
+                            {
+                                bEnd = std::upper_bound(
+                                    iter->second.begin(), iter->second.end(), b, upperB);
+                            }
+                            else
+                            {
+                                auto bval = bEnd->b - 1;
+                                bStart    = std::lower_bound(
+                                    iter->second.begin(), iter->second.end(), bval, lowerB);
+                                bEnd++;
+                            }
+                            if(Debug)
+                                std::cout << "bStart " << bStart->b << ", bEnd " << bEnd->b
+                                          << " k at bStart " << bStart->k << ", k at bEnd "
+                                          << bEnd->k << std::endl;
 
-                                    bestmatches.push_back(thisMatch);
+                            auto lower = std::lower_bound(bStart, bEnd, k, compK);
+                            if(lower == bEnd)
+                                lower--;
+                            auto prev = lower == bStart ? lower : lower--;
+                            if(prev != lower)
+                            {
+                                if(std::abs(prev->k - k) < std::abs(lower->k - k))
+                                {
+                                    lower = prev;
                                 }
+                            }
+                            auto thisMatch = transform(lower->value);
+                            if(thisMatch)
+                            {
+                                if(bestmatches.size())
+                                {
+                                    if(std::find(bestmatches.begin(), bestmatches.end(), thisMatch)
+                                       != bestmatches.end())
+                                    {
+                                        if(Debug)
+                                            std::cout << "Duplicated solution" << std::endl;
+                                        continue;
+                                    }
+                                }
+                                if(Debug)
+                                    std::cout
+                                        << "Final selected points: M: " << result.node->pt.coord[0]
+                                        << ", N: " << result.node->pt.coord[1]
+                                        << ", B: " << lower->b << ", K: " << lower->k << std::endl;
+
+                                bestmatches.push_back(thisMatch);
                             }
                         }
                     }
@@ -1063,28 +1098,39 @@ namespace Tensile
 
                 auto compM = [&count, Debug](Entry const& e, long const M) {
                     if(Debug)
-                        printf("[%ld,%ld,%ld]\n", e.key[0], e.key[1], e.key[2]);
+                        printf("[ %ld ,%ld,%ld,%ld]\n", e.key[0], e.key[1], e.key[2], e.key[3]);
                     count++;
                     return e.key[0] < M;
                 };
 
                 auto compN = [&count, Debug](Entry const& e, long const N) {
                     if(Debug)
-                        printf("[%ld,%ld,%ld]\n", e.key[0], e.key[1], e.key[2]);
+                        printf("[%ld, %ld ,%ld,%ld]\n", e.key[0], e.key[1], e.key[2], e.key[3]);
                     count++;
                     return e.key[1] < N;
+                };
+
+                auto compB = [&count, Debug](Entry const& e, long const B) {
+                    if(Debug)
+                        printf("[%ld,%ld, %ld ,%ld]\n", e.key[0], e.key[1], e.key[2], e.key[3]);
+                    count++;
+                    return e.key[2] < B;
                 };
 
                 auto origIter_M_lower = table.begin();
                 auto origIter_M_upper = table.begin();
                 auto origIter_N_lower = table.begin();
                 auto origIter_N_upper = table.begin();
+                auto origIter_B_lower = table.begin();
+                auto origIter_B_upper = table.begin();
                 auto start            = table.begin();
+                auto batch            = table.begin();
 
                 double bestDistance = std::numeric_limits<double>::max();
                 auto   bestMatch    = this->nullValue;
                 bool   thisMatch    = false;
                 bool   uniqueSol    = false;
+                bool   firstFind    = true;
                 int    baseN        = 0;
                 int    stepN        = 0;
                 for(int i = 1;; i++)
@@ -1096,7 +1142,7 @@ namespace Tensile
                     }
                 }
 
-                while(origIter_N_upper != table.end() and bestmatches.size() < numSolutions)
+                while(origIter_B_upper != table.end() and bestmatches.size() < numSolutions)
                 {
                     bestDistance = std::numeric_limits<double>::max();
                     thisMatch    = false;
@@ -1111,12 +1157,12 @@ namespace Tensile
                     {
                         stepN = 1;
                         baseN--;
-                        start = origIter_M_upper;
+                        start = origIter_M_upper; // find next M
                     }
                     else
                     {
                         stepN++;
-                        start = origIter_N_upper;
+                        start = origIter_N_upper; // find next N
                     }
 
                     origIter_M_lower = std::lower_bound(
@@ -1166,29 +1212,60 @@ namespace Tensile
                         std::cout << "N upper: ";
                         streamJoin(std::cout, (origIter_N_upper - 1)->key, ", ");
                         std::cout << std::endl << std::endl;
+                    }
 
-                        std::cout << "K start point: ";
-                        streamJoin(std::cout, origIter_N_lower->key, ", ");
-                        std::cout << std::endl << std::endl;
+                    origIter_B_lower
+                        = std::lower_bound(origIter_N_lower,
+                                           origIter_N_upper,
+                                           std::min(key[2], (origIter_N_upper - 1)->key[2]),
+                                           compB);
 
-                        std::cout << "K End point: ";
-                        streamJoin(std::cout, (origIter_N_upper - 1)->key, ", ");
+                    if(T_Debug)
+                    {
+                        std::cout << "B lower: ";
+                        streamJoin(std::cout, origIter_B_lower->key, ", ");
                         std::cout << std::endl << std::endl;
                     }
 
-                    for(auto iter = origIter_N_lower; iter != origIter_N_upper; iter++)
+                    origIter_B_upper = std::lower_bound(
+                        origIter_B_lower,
+                        origIter_N_upper,
+                        std::min(origIter_B_lower->key[2] + 1, (origIter_N_upper - 1)->key[2] + 1),
+                        compB);
+
+                    if(T_Debug)
+                    {
+                        std::cout << "B upper: ";
+                        streamJoin(std::cout, (origIter_B_upper - 1)->key, ", ");
+                        std::cout << std::endl << std::endl;
+                    }
+
+                    if(T_Debug)
+                    {
+                        std::cout << "K start point: ";
+                        streamJoin(std::cout, origIter_B_lower->key, ", ");
+                        std::cout << std::endl << std::endl;
+
+                        std::cout << "K End point: ";
+                        streamJoin(std::cout, (origIter_B_upper - 1)->key, ", ");
+                        std::cout << std::endl << std::endl;
+                    }
+
+                    for(auto iter = origIter_B_lower; iter != origIter_B_upper; iter++)
                     {
 
                         count++;
 
                         auto myDistance = distance(key, iter->key);
+                        auto preBestDistance = bestDistance;
 
-                        if(myDistance < bestDistance)
+                        if(myDistance <= bestDistance)
                         {
                             auto myMatch = transform(iter->value);
 
                             if(myMatch)
                             {
+                                batch        = iter;
                                 bestDistance = myDistance;
                                 bestMatch    = myMatch;
                                 thisMatch    = true;
@@ -1200,16 +1277,16 @@ namespace Tensile
                             streamJoin(std::cout, iter->key, ", ");
                             std::cout << ": " << myDistance;
 
-                            if(myDistance < bestDistance)
+                            if(myDistance < preBestDistance)
                                 std::cout << " < ";
-                            else if(myDistance > bestDistance)
+                            else if(myDistance > preBestDistance)
                                 std::cout << " > ";
                             else
                                 std::cout << " == ";
 
-                            std::cout << bestDistance;
+                            std::cout << preBestDistance;
 
-                            if(myDistance < bestDistance)
+                            if(myDistance <= preBestDistance)
                             {
                                 if(thisMatch)
                                     std::cout << " <-- Best so far";
@@ -1219,7 +1296,51 @@ namespace Tensile
 
                             std::cout << std::endl << std::endl;
                         }
+
+
                     }
+
+                    if(!Debug::Instance().gridBasedBatchExp() && firstFind)
+                    {
+                        firstFind = false;
+                        if(key.size() > 3)
+                        {
+                            if(key[2] != 1)
+                            {
+                                if(key[0] > key[1])
+                                    key[0] = key[0] * key[2];
+                                else
+                                    key[1] = key[1] * key[2];
+                                key[2] = 1;
+
+                                if(T_Debug)
+                                {
+                                    std::cout << "New Size for batch grid: ["
+                                              << key[0] << "," << key[1] << "," << key[2] << "," << key[3] << "]";
+                                    std::cout << std::endl << std::endl;
+                                }
+
+                                if(batch->key[2] == 1)
+                                {
+                                    origIter_M_lower = table.begin();
+                                    origIter_M_upper = table.begin();
+                                    origIter_N_lower = table.begin();
+                                    origIter_N_upper = table.begin();
+                                    origIter_B_lower = table.begin();
+                                    origIter_B_upper = table.begin();
+                                    start            = table.begin();
+                                    baseN            = 0;
+                                    stepN            = 0;
+                                    if(T_Debug)
+                                    {
+                                        std::cout << "Not found batch in grid, restart search with new size" << std::endl;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
                     if(thisMatch or bestmatches.size())
                     {
                         if(std::find(bestmatches.begin(), bestmatches.end(), bestMatch)
@@ -1244,11 +1365,11 @@ namespace Tensile
                     if(T_Debug)
                     {
                         std::cout << std::endl
-                                  << "Foward Search end but solution not found" << std::endl;
+                                  << "Foward Search end but number of solutions not enough" << std::endl;
                         std::cout << "Start to backward search..." << std::endl;
                     }
 
-                    for(auto iter = std::make_reverse_iterator(origIter_N_lower);
+                    for(auto iter = std::make_reverse_iterator(origIter_B_lower);
                         iter != table.rend();
                         iter++)
                     {
@@ -1306,4 +1427,4 @@ namespace Tensile
             }
         };
     } // namespace Matching
-} // namespace Tensile
+} // namespace TensileLite

@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2022-2023 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -20,20 +20,22 @@
 # CTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ################################################################################
 
-from copy import deepcopy
+from rocisa import rocIsa
 
-from .TensileInstructions import TensileInstructions
-from .Common import globalParameters, CHeader, gfxArch, getGfxName
+from copy import deepcopy
+from typing import List
+
+from Tensile.Common.Architectures import isaToGfx, IsaVersion
 from .Activation import ActivationInline, ActivationType
 from .KernelWriterBase import KernelWriterBase
 
 class KernelWriterActivationFunction(KernelWriterBase):
 
-  def __init__(self, state):
+  def __init__(self, state, cxxCompiler: str, supportedISA: List[IsaVersion]):
     super().__init__()
+    self.cxxCompiler = cxxCompiler
     self.state["ProblemType"] = deepcopy(state["ProblemType"])
     self.state["Kernel"] = state["Kernel"]
-    self._tf = TensileInstructions()
 
     self.actGradientPrefix = ""
     self.actExportType =  ActivationType.Export.NORMAL
@@ -45,16 +47,7 @@ class KernelWriterActivationFunction(KernelWriterBase):
     self.enumName = "Tensile::%sActivationType_%s"%(self.actGradientPrefix, \
                                                     self.state["ProblemType"]["ActivationComputeDataType"])
 
-    # Get supported archs
-    if ";" in globalParameters["Architecture"]:
-      self.supportedArchs = globalParameters["Architecture"].split(";")
-    else:
-      self.supportedArchs = globalParameters["Architecture"].split("_")
-    if "all" in self.supportedArchs:
-      self.supportedArchs = deepcopy(globalParameters['SupportedISA'])
-    else:
-      for idx, arch in enumerate(self.supportedArchs):
-        self.supportedArchs[idx] = gfxArch(''.join(map(str, arch)))
+    self.supportedArchs = supportedISA
 
     # derive parameter
     self.language = "HIP"
@@ -79,7 +72,7 @@ class KernelWriterActivationFunction(KernelWriterBase):
 
     ptrStr = self.state["ProblemType"]["ActivationComputeDataType"].toDevice("HIP")
     names = ""
-    if self.state["ProblemType"]["ActivationType"] == 'all':
+    if self.state["ProblemType"]["ActivationType"] in ['all', 'hipblaslt_all']:
       names += ",\n"
       names += "  %s const activationType"%self.enumName
     for name in self.state["ProblemType"]["ActivationType"].getAdditionalArgStringList(False):
@@ -91,8 +84,16 @@ class KernelWriterActivationFunction(KernelWriterBase):
 
   def getInlineAsm(self, activation: ActivationInline, spaces: int, activationType: str):
     activationStrList = []
+
+    isa = tuple(self.state["Kernel"]["ISA"])
+    tf  = rocIsa.getInstance()
+    if not tf.isInit():
+      tf.init(isa, self.cxxCompiler)
+    tf.setKernel(isa, self.state["Kernel"]["WavefrontSize"])
+
     for arch in self.supportedArchs:
-      self._tf.setKernelInfo(tuple(arch), self.state["Kernel"]["WavefrontSize"])
+      tf.init(arch, self.cxxCompiler)
+      tf.setKernel(arch, self.state["Kernel"]["WavefrontSize"])
       activationStrList.append(activation.generateInlineAssemblyBody(spaces, activationType))
 
     activationStrSetList = list(set(activationStrList))
@@ -112,9 +113,9 @@ class KernelWriterActivationFunction(KernelWriterBase):
     defineStr = []
     macroStr = "#if"
     for archList in cateArch:
-      defStr = "%s defined(__%s__)"%(macroStr, getGfxName(archList[0]))
+      defStr = "%s defined(__%s__)"%(macroStr, isaToGfx(archList[0]))
       for arch in archList:
-        defStr += "|| defined(__%s__)"%getGfxName(arch)
+        defStr += "|| defined(__%s__)"%isaToGfx(arch)
       defStr += "\n"
       defineStr.append(defStr)
       macroStr = "#elif"
@@ -131,22 +132,24 @@ class KernelWriterActivationFunction(KernelWriterBase):
     if self.state["ProblemType"]["ActivationType"] == 'none':
       return fileString
 
+    isa = tuple(self.state["Kernel"]["ISA"])
+    tf  = rocIsa.getInstance()
+    tf.init(isa, self.cxxCompiler)
+    tf.setKernel(isa, self.state["Kernel"]["WavefrontSize"])
+
     activationCDataType = self.state["ProblemType"]["ActivationComputeDataType"]
-    self._tf.setKernelInfo(tuple(self.state["Kernel"]["ISA"]), self.state["Kernel"]["WavefrontSize"])
+    activationType = self.state["ProblemType"]["ActivationType"]
+    tf.setKernel(tuple(self.state["Kernel"]["ISA"]), self.state["Kernel"]["WavefrontSize"])
     activation = ActivationInline(activationCDataType, not self.state["ProblemType"]["ActivationNoGuard"])
 
     fileString = "" # CHeader
-    if not globalParameters["MergeFiles"]:
-      fileString += CHeader
-      fileString += "#pragma once\n\n"
-      fileString += "#include \"Tensile%sActivationEnum_%s.h\"\n"%(self.actGradientPrefix, activationCDataType.toChar())
-      fileString += "\n"
-
     fileString += "#pragma clang diagnostic push\n"
     fileString += "#pragma clang diagnostic ignored \"-Winline-asm\"\n"
     fileString += self.functionSignature()
-    if self.state["ProblemType"]["ActivationType"] == 'all':
+    if activationType in ['all', 'hipblaslt_all']:
+      supportedBy = ActivationType.SupportedBy.ALL if activationType == 'all' else ActivationType.SupportedBy.HIPBLASLT
       for index, enumStr in enumerate(ActivationType.getEnumStrList(activationCDataType, \
+                                                                    supportedBy, \
                                                                     includeNone=False, \
                                                                     exportType=self.actExportType)):
         if index == 0:

@@ -1,5 +1,5 @@
 TestParameters:
-  marks: [skip-gfx1100, skip-gfx1101, skip-gfx1102] # not supported yet
+  marks: [skip-gfx1100, skip-gfx1101, skip-gfx1102, skip-gfx1200, skip-gfx1201] # not supported yet
 
 GlobalParameters:
   MinimumRequiredVersion: 4.14.0
@@ -30,6 +30,7 @@ BenchmarkProblems:
       Batched: True
       UseBias:       1
       Activation:    True
+      ActivationType: hipblaslt_all
       GroupedGemm:   True
     - # BenchmarkProblemSizeGroup - Standard
       InitialSolutionParameters:
@@ -79,6 +80,7 @@ BenchmarkProblems:
       Batched: True
       UseBias:       1
       Activation:    True
+      ActivationType: all
       GroupedGemm:   True
     - # BenchmarkProblemSizeGroup - Standard
       InitialSolutionParameters:

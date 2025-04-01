@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,13 +31,16 @@
 #include <Tensile/KernelLanguageTypes.hpp>
 #include <Tensile/Predicates.hpp>
 
+#include <Tensile/AMDGPU.hpp>
+#include <Tensile/hip/HipHardware.hpp>
+
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
 #include <vector>
 
-namespace Tensile
+namespace TensileLite
 {
     namespace Predicates
     {
@@ -230,10 +233,13 @@ namespace Tensile
                     // M/MT0 x N/MT1 x NumElementsPerThread/StoreVectorWidth x x Wavenumbers
                     bool ret = (std::ceil(static_cast<float>(problem.freeSizeA(0)) / value[0])
                                 * std::ceil(static_cast<float>(problem.freeSizeB(0)) / value[1]))
-                                * (value[2]) * (value[4] / 64) * value[3]
-                               <= 40960;
+                                   * (value[2]) * (value[4] / 64) * value[3]
+                               <= 409600;
                     if(problem.groupedGemm())
                         ret = ret && (problem.groupedGemmCount() <= 16);
+
+                    ret = ret && (problem.c().strides()[1] == problem.freeSizeA(0));
+                    ret = ret && (problem.d().strides()[1] == problem.freeSizeA(0));
 
                     return ret;
                 }
@@ -246,8 +252,8 @@ namespace Tensile
                         stream,
                         "prob",
                         (std::ceil(static_cast<float>(problem.freeSizeA(0)) / value[0])
-                                * std::ceil(static_cast<float>(problem.freeSizeB(0)) / value[1]))
-                                * (value[2]) * (value[4] / 64) * value[3],
+                         * std::ceil(static_cast<float>(problem.freeSizeB(0)) / value[1]))
+                            * (value[2]) * (value[4] / 64) * value[3],
                         "==",
                         "sol",
                         40960);
@@ -845,6 +851,63 @@ namespace Tensile
                 }
             };
 
+            struct AmaxDCheck : public Predicate_CRTP<AmaxDCheck, ContractionProblemGemm>
+            {
+                enum
+                {
+                    HasIndex = false,
+                    HasValue = true
+                };
+                bool value;
+
+                AmaxDCheck() = default;
+                AmaxDCheck(bool value)
+                    : value(value)
+                {
+                }
+
+                static std::string Type()
+                {
+                    return "AmaxDCheck";
+                }
+
+                virtual bool operator()(ContractionProblemGemm const& problem) const override
+                {
+                    bool amaxDStatusEqual = (problem.outputAmaxD() == value);
+
+                    // if value is true, then we also need to check gsu
+                    // otherwise we just check outputAmaxD
+                    if(value)
+                        return amaxDStatusEqual && problem.getParams().gsu() <= 1;
+                    else
+                        return amaxDStatusEqual;
+                }
+
+                virtual bool debugEval(ContractionProblemGemm const& problem,
+                                       std::ostream&                 stream) const override
+                {
+                    return (value) ? debugEvalCmp(problem,
+                                                  stream,
+                                                  "prob_amaxD",
+                                                  problem.outputAmaxD(),
+                                                  "==",
+                                                  "sol_amaxD",
+                                                  value,
+                                                  "prob_gsu",
+                                                  (int)(problem.getParams().gsu()),
+                                                  "<=",
+                                                  "sol_gsu",
+                                                  1)
+                                   : debugEvalCmp(problem,
+                                                  stream,
+                                                  "prob_amaxD",
+                                                  problem.outputAmaxD(),
+                                                  "==",
+                                                  "sol_amaxD",
+                                                  value);
+                }
+            };
+
             struct BetaZero : public Predicate_CRTP<BetaZero, ContractionProblemGemm>
             {
                 enum
@@ -1012,6 +1075,83 @@ namespace Tensile
                 {
                     return debugEvalCmp(
                         problem, stream, "prob", problem.deterministicMode(), "==", "sol", value);
+                }
+            };
+
+            struct AIGreaterThanEqual
+                : public Predicate_CRTP<AIGreaterThanEqual, ContractionProblemGemm>
+            {
+                enum
+                {
+                    HasIndex = false,
+                    HasValue = true
+                };
+
+                double value;
+
+                AIGreaterThanEqual() = default;
+                AIGreaterThanEqual(double value)
+                    : value(value)
+                {
+                }
+
+                static std::string Type()
+                {
+                    return "AIGreaterThanEqual";
+                }
+
+                virtual bool operator()(ContractionProblemGemm const& problem) const override
+                {
+                    return problem.arithmeticIntensity() >= value;
+                }
+
+                virtual bool debugEval(ContractionProblemGemm const& problem,
+                                       std::ostream&                 stream) const override
+                {
+                    bool rv = (*this)(problem);
+
+                    stream << *this << ": (" << problem.arithmeticIntensity() << " >= " << value
+                           << ") == " << rv;
+
+                    return rv;
+                }
+            };
+
+            struct AILessThanEqual : public Predicate_CRTP<AILessThanEqual, ContractionProblemGemm>
+            {
+                enum
+                {
+                    HasIndex = false,
+                    HasValue = true
+                };
+
+                double value;
+
+                AILessThanEqual() = default;
+                AILessThanEqual(double value)
+                    : value(value)
+                {
+                }
+
+                static std::string Type()
+                {
+                    return "AILessThanEqual";
+                }
+
+                virtual bool operator()(ContractionProblemGemm const& problem) const override
+                {
+                    return problem.arithmeticIntensity() <= value;
+                }
+
+                virtual bool debugEval(ContractionProblemGemm const& problem,
+                                       std::ostream&                 stream) const override
+                {
+                    bool rv = (*this)(problem);
+
+                    stream << *this << ": (" << problem.arithmeticIntensity() << " <= " << value
+                           << ") == " << rv;
+
+                    return rv;
                 }
             };
 
@@ -1465,6 +1605,59 @@ namespace Tensile
                 }
             };
 
+            struct WorkgroupNumberCheck
+                : public Predicate_CRTP<WorkgroupNumberCheck, ContractionProblemGemm>
+            {
+                enum
+                {
+                    HasIndex = true,
+                    HasValue = true
+                };
+                size_t             index;
+                std::array<int, 3> value;
+
+                WorkgroupNumberCheck() = default;
+                WorkgroupNumberCheck(size_t index, std::array<int, 3> value)
+                    : index(index)
+                    , value(value)
+                {
+                }
+
+// If the number is larger than 2^24, it may lose precision when converted into fp32.
+// TODO: REMOVE custom kernel, then REMOVE the behavior that compressed 3 DIM workgroups into 1 DIM
+#define MAX_WORKGROUP_NUMBER 16777216
+                static std::string Type()
+                {
+                    return "WorkgroupNumberCheck";
+                }
+                virtual bool operator()(ContractionProblemGemm const& problem) const override
+                {
+                    int gsu = problem.getParams().gsu() > 0 ? problem.getParams().gsu() : value[2];
+                    gsu     = gsu > 1 ? gsu : 1;
+                    return (std::ceil(static_cast<float>(problem.freeSizeA(0)) / value[0])
+                            * std::ceil(static_cast<float>(problem.freeSizeB(0)) / value[1]) * gsu
+                            * problem.batchSize(0))
+                           <= MAX_WORKGROUP_NUMBER;
+                }
+                virtual bool debugEval(ContractionProblemGemm const& problem,
+                                       std::ostream&                 stream) const override
+                {
+                    int gsu = problem.getParams().gsu() > 0 ? problem.getParams().gsu() : value[2];
+                    gsu     = gsu > 1 ? gsu : 1;
+                    int workgroupNumber
+                        = std::ceil(static_cast<float>(problem.freeSizeA(0)) / value[0])
+                          * std::ceil(static_cast<float>(problem.freeSizeB(0)) / value[1]) * gsu
+                          * problem.batchSize(0);
+                    return debugEvalCmp(problem,
+                                        stream,
+                                        "prob's workgroup number",
+                                        workgroupNumber,
+                                        "<=",
+                                        "max workgroup number",
+                                        MAX_WORKGROUP_NUMBER);
+                }
+            };
+
             struct PersistentKernelCheck
                 : public Predicate_CRTP<PersistentKernelCheck, ContractionProblemGemm>
             {
@@ -1697,7 +1890,8 @@ namespace Tensile
                 }
             };
 
-            struct Experimental : public Predicate_CRTP<Experimental, ContractionProblemGemm>
+            struct ExperimentalStreamK
+                : public Predicate_CRTP<ExperimentalStreamK, ContractionProblemGemm>
             {
                 enum
                 {
@@ -1705,16 +1899,16 @@ namespace Tensile
                     HasValue = false
                 };
 
-                Experimental() = default;
+                ExperimentalStreamK() = default;
 
                 static std::string Type()
                 {
-                    return "Experimental";
+                    return "ExperimentalStreamK";
                 }
 
                 virtual bool operator()(ContractionProblemGemm const& problem) const override
                 {
-                    return (problem.performanceMetric() == PerformanceMetric::Experimental);
+                    return (problem.performanceMetric() == PerformanceMetric::ExperimentalStreamK);
                 }
 
                 virtual bool debugEval(ContractionProblemGemm const& problem,
@@ -1725,8 +1919,38 @@ namespace Tensile
                                         "prob",
                                         problem.performanceMetric(),
                                         "==",
-                                        "sol: PerformanceMetric::Experimental",
-                                        PerformanceMetric::Experimental);
+                                        "sol: PerformanceMetric::ExperimentalStreamK",
+                                        PerformanceMetric::ExperimentalStreamK);
+                }
+            };
+
+            struct ExperimentalMLP
+                : public Predicate_CRTP<ExperimentalMLP, ContractionProblemGemm>
+            {
+                enum
+                {
+                    HasIndex = false,
+                    HasValue = false
+                };
+                ExperimentalMLP() = default;
+                static std::string Type()
+                {
+                    return "ExperimentalMLP";
+                }
+                virtual bool operator()(ContractionProblemGemm const& problem) const override
+                {
+                    return (problem.performanceMetric() == PerformanceMetric::ExperimentalMLP);
+                }
+                virtual bool debugEval(ContractionProblemGemm const& problem,
+                                       std::ostream&                 stream) const override
+                {
+                    return debugEvalCmp(problem,
+                                        stream,
+                                        "prob",
+                                        problem.performanceMetric(),
+                                        "==",
+                                        "sol: PerformanceMetric::ExperimentalMLP",
+                                        PerformanceMetric::ExperimentalMLP);
                 }
             };
 
@@ -1825,7 +2049,7 @@ namespace Tensile
             };
 
             // Activation
-            struct ActivationEqual : public Predicate_CRTP<ActivationEqual, ContractionProblemGemm>
+            struct ActivationCheck : public Predicate_CRTP<ActivationCheck, ContractionProblemGemm>
             {
                 enum
                 {
@@ -1834,8 +2058,8 @@ namespace Tensile
                 };
                 ActivationType value;
 
-                ActivationEqual() = default;
-                ActivationEqual(ActivationType value)
+                ActivationCheck() = default;
+                ActivationCheck(ActivationType value)
                     : value(value)
                 {
                 }
@@ -1847,7 +2071,19 @@ namespace Tensile
 
                 virtual bool operator()(ContractionProblemGemm const& problem) const override
                 {
-                    return problem.activationType() == value;
+                    if(value == ActivationType::All)
+                        return true;
+                    if(problem.activationType() == value
+                       || problem.activationType() == ActivationType::None)
+                        return true;
+                    if(value == ActivationType::Hipblaslt_all
+                       && (problem.activationType() == ActivationType::DGelu
+                           || problem.activationType() == ActivationType::Gelu
+                           || problem.activationType() == ActivationType::Relu
+                           || problem.activationType() == ActivationType::Silu))
+                        return true;
+
+                    return false;
                 }
 
                 virtual bool debugEval(ContractionProblemGemm const& problem,
@@ -1877,7 +2113,8 @@ namespace Tensile
 
                 virtual bool operator()(ContractionProblemGemm const& problem) const override
                 {
-                    if(problem.activationType() == ActivationType::All)
+                    if(problem.activationType() == ActivationType::All
+                       || problem.activationType() == ActivationType::Hipblaslt_all)
                     {
                         for(size_t i = 0; i < value.size(); i++)
                         {
@@ -1986,7 +2223,7 @@ namespace Tensile
                 }
             };
 
-            struct UseBiasEqual : public Predicate_CRTP<UseBiasEqual, ContractionProblemGemm>
+            struct UseBiasCheck : public Predicate_CRTP<UseBiasCheck, ContractionProblemGemm>
             {
                 enum
                 {
@@ -1995,8 +2232,8 @@ namespace Tensile
                 };
                 int value;
 
-                UseBiasEqual() = default;
-                UseBiasEqual(int value)
+                UseBiasCheck() = default;
+                UseBiasCheck(int value)
                     : value(value)
                 {
                 }
@@ -2008,14 +2245,16 @@ namespace Tensile
 
                 virtual bool operator()(ContractionProblemGemm const& problem) const override
                 {
-                    return problem.useBias() == value;
+                    return !problem.useBias() || value;
                 }
 
                 virtual bool debugEval(ContractionProblemGemm const& problem,
                                        std::ostream&                 stream) const override
                 {
-                    return debugEvalCmp(
-                        problem, stream, "prob", problem.useBias(), "==", "sol", value);
+                    bool rv = (*this)(problem);
+                    stream << *this << ": prob: " << problem.useBias()
+                           << ", Is sol support: " << value << std::endl;
+                    return rv;
                 }
             };
 
@@ -2052,17 +2291,61 @@ namespace Tensile
                 }
             };
 
-            struct UseScaleABEqual : public Predicate_CRTP<UseScaleABEqual, ContractionProblemGemm>
+            struct DataTypeEEqual : public Predicate_CRTP<DataTypeEEqual, ContractionProblemGemm>
             {
                 enum
                 {
                     HasIndex = false,
                     HasValue = true
                 };
-                bool value;
+                DataType value;
 
-                UseScaleABEqual() = default;
-                UseScaleABEqual(bool value)
+                DataTypeEEqual() = default;
+                DataTypeEEqual(DataType value)
+                    : value(value)
+                {
+                }
+
+                static std::string Type()
+                {
+                    return "DataTypeE";
+                }
+
+                virtual bool operator()(ContractionProblemGemm const& problem) const override
+                {
+                    if(problem.useE())
+                    {
+                        return problem.e().dataType() == value;
+                    }
+                    return true;
+                }
+
+                virtual std::string toString() const override
+                {
+                    return concatenate(this->type(), "(e:", value);
+                }
+
+                virtual bool debugEval(ContractionProblemGemm const& problem,
+                                       std::ostream&                 stream) const override
+                {
+                    bool rv = (*this)(problem);
+                    debugEvalCmp(
+                        problem, stream, "prob_e", problem.e().dataType(), "==", "sol_e", value);
+                    return rv;
+                }
+            };
+
+            struct UseScaleABCheck : public Predicate_CRTP<UseScaleABCheck, ContractionProblemGemm>
+            {
+                enum
+                {
+                    HasIndex = false,
+                    HasValue = true
+                };
+                std::string value;
+
+                UseScaleABCheck() = default;
+                UseScaleABCheck(std::string value)
                     : value(value)
                 {
                 }
@@ -2074,18 +2357,21 @@ namespace Tensile
 
                 virtual bool operator()(ContractionProblemGemm const& problem) const override
                 {
-                    return problem.useScaleAB() == value;
+                    return problem.useScaleAB().empty() || (problem.useScaleAB() == value);
                 }
 
                 virtual bool debugEval(ContractionProblemGemm const& problem,
                                        std::ostream&                 stream) const override
                 {
-                    return debugEvalCmp(
-                        problem, stream, "prob", problem.useScaleAB(), "==", "sol", value);
+                    bool rv = (*this)(problem);
+
+                    stream << *this << ": prob: " << problem.useScaleAB()
+                           << ", Is sol support: " << value << std::endl;
+                    return rv;
                 }
             };
 
-            struct UseScaleCDEqual : public Predicate_CRTP<UseScaleCDEqual, ContractionProblemGemm>
+            struct UseScaleCDCheck : public Predicate_CRTP<UseScaleCDCheck, ContractionProblemGemm>
             {
                 enum
                 {
@@ -2094,8 +2380,8 @@ namespace Tensile
                 };
                 bool value;
 
-                UseScaleCDEqual() = default;
-                UseScaleCDEqual(bool value)
+                UseScaleCDCheck() = default;
+                UseScaleCDCheck(bool value)
                     : value(value)
                 {
                 }
@@ -2107,29 +2393,32 @@ namespace Tensile
 
                 virtual bool operator()(ContractionProblemGemm const& problem) const override
                 {
-                    return problem.useScaleCD() == value;
+                    return !problem.useScaleCD() || value;
                 }
 
                 virtual bool debugEval(ContractionProblemGemm const& problem,
                                        std::ostream&                 stream) const override
                 {
-                    return debugEvalCmp(
-                        problem, stream, "prob", problem.useScaleCD(), "==", "sol", value);
+                    bool rv = (*this)(problem);
+
+                    stream << *this << ": prob: " << problem.useScaleCD()
+                           << ", Is sol support: " << value << std::endl;
+                    return rv;
                 }
             };
 
-            struct UseScaleAlphaVecEqual
-                : public Predicate_CRTP<UseScaleAlphaVecEqual, ContractionProblemGemm>
+            struct UseScaleAlphaVecCheck
+                : public Predicate_CRTP<UseScaleAlphaVecCheck, ContractionProblemGemm>
             {
                 enum
                 {
                     HasIndex = false,
                     HasValue = true
                 };
-                bool value;
+                int value;
 
-                UseScaleAlphaVecEqual() = default;
-                UseScaleAlphaVecEqual(bool value)
+                UseScaleAlphaVecCheck() = default;
+                UseScaleAlphaVecCheck(int value)
                     : value(value)
                 {
                 }
@@ -2141,14 +2430,17 @@ namespace Tensile
 
                 virtual bool operator()(ContractionProblemGemm const& problem) const override
                 {
-                    return problem.useScaleAlphaVec() == value;
+                    return !problem.useScaleAlphaVec() || (problem.useScaleAlphaVec() & value);
                 }
 
                 virtual bool debugEval(ContractionProblemGemm const& problem,
                                        std::ostream&                 stream) const override
                 {
-                    return debugEvalCmp(
-                        problem, stream, "prob", problem.useScaleAlphaVec(), "==", "sol", value);
+                    bool rv = (*this)(problem);
+
+                    stream << *this << ": prob: " << problem.useScaleAlphaVec()
+                           << ", Is sol support: " << value << std::endl;
+                    return rv;
                 }
             };
 
@@ -2222,12 +2514,20 @@ namespace Tensile
 
                 virtual bool operator()(ContractionProblemGemm const& problem) const override
                 {
+                    if(problem.useBias() && problem.useScaleAlphaVec()
+                       && problem.useBias() != problem.useScaleAlphaVec())
+                        return false;
+
+                    int factorDim = (problem.useBias() == 1) ? 0
+                                    : problem.useBias() == 2 ? 1
+                                    : problem.useBias() == 3 ? problem.getParams().factorDim()
+                                                             : 0;
+
                     if(problem.useBias())
                     {
                         auto& tensor = problem.tensor(ContractionProblemGemm::TENSOR::BIAS);
                         if(tensor.sizes().size() == 0)
                             return false;
-
                         for(size_t i = 0; i < value.size(); i++)
                         {
                             if(value[i] == static_cast<int>(problem.biasSrc()))
@@ -2237,15 +2537,13 @@ namespace Tensile
                                 if(problem.biasSrc() == ContractionProblemGemm::TENSOR::A
                                    || problem.biasSrc() == ContractionProblemGemm::TENSOR::D)
                                 {
-                                    auto eLength = (problem.useBias() == 1 || problem.biasSrc() != ContractionProblemGemm::TENSOR::D)
-                                                     ? problem.d().sizes()[0]
-                                                     : (problem.useBias() == 2)
-                                                     ? problem.d().sizes()[1]
-                                                     : (problem.useBias() == 3)
-                                                     ? (problem.getParams().biasDim() == 1)
-                                                     ? problem.d().sizes()[1]
-                                                     : problem.d().sizes()[0]
-                                                     : -1;
+                                    auto eLength = (problem.useBias() == 1
+                                                    || problem.biasSrc()
+                                                           != ContractionProblemGemm::TENSOR::D)
+                                                       ? problem.d().sizes()[0]
+                                                   : (problem.useBias() <= 3)
+                                                       ? problem.d().sizes()[factorDim]
+                                                       : -1;
                                     if(length < eLength)
                                         return false;
                                 }
@@ -2319,6 +2617,72 @@ namespace Tensile
                 {
                     return debugEvalCmp(
                         problem, stream, "prob", problem.sparse(), "==", "sol", value);
+                }
+            };
+
+            struct SwizzleTensorA : public Predicate_CRTP<SwizzleTensorA, ContractionProblemGemm>
+            {
+                enum
+                {
+                    HasIndex = false,
+                    HasValue = true
+                };
+                bool value;
+
+                SwizzleTensorA() = default;
+                SwizzleTensorA(bool value)
+                    : value(value)
+                {
+                }
+
+                static std::string Type()
+                {
+                    return "SwizzleTensorA";
+                }
+
+                bool operator()(ContractionProblemGemm const& problem) const override
+                {
+                    return problem.swizzleTensorA() == value;
+                }
+
+                bool debugEval(ContractionProblemGemm const& problem,
+                               std::ostream&                 stream) const override
+                {
+                    return debugEvalCmp(
+                        problem, stream, "prob", problem.swizzleTensorA(), "==", "sol", value);
+                }
+            };
+
+            struct SwizzleTensorB : public Predicate_CRTP<SwizzleTensorB, ContractionProblemGemm>
+            {
+                enum
+                {
+                    HasIndex = false,
+                    HasValue = true
+                };
+                bool value;
+
+                SwizzleTensorB() = default;
+                SwizzleTensorB(bool value)
+                    : value(value)
+                {
+                }
+
+                static std::string Type()
+                {
+                    return "SwizzleTensorB";
+                }
+
+                bool operator()(ContractionProblemGemm const& problem) const override
+                {
+                    return problem.swizzleTensorB() == value;
+                }
+
+                bool debugEval(ContractionProblemGemm const& problem,
+                               std::ostream&                 stream) const override
+                {
+                    return debugEvalCmp(
+                        problem, stream, "prob", problem.swizzleTensorB(), "==", "sol", value);
                 }
             };
 
@@ -2400,10 +2764,65 @@ namespace Tensile
                     return rv;
                 }
             };
+
+            struct WorkgroupMappingXCCCheck
+                : public Predicate_CRTP<WorkgroupMappingXCCCheck, ContractionProblemGemm>
+            {
+                enum
+                {
+                    HasIndex = false,
+                    HasValue = true
+                };
+                std::array<int, 2> value;
+                size_t             cuCount;
+
+                WorkgroupMappingXCCCheck()
+                {
+                    auto pHardware = hip::GetCurrentDevice();
+                    assert(pHardware != nullptr);
+                    Hardware const& hardware = *pHardware;
+                    AMDGPU const*   pAMDGPU  = dynamic_cast<AMDGPU const*>(&hardware);
+                    cuCount                  = pAMDGPU->computeUnitCount;
+                }
+                WorkgroupMappingXCCCheck(std::array<int, 2> value)
+                    : value(value)
+                {
+                    auto pHardware = hip::GetCurrentDevice();
+                    assert(pHardware != nullptr);
+                    Hardware const& hardware = *pHardware;
+                    AMDGPU const*   pAMDGPU  = dynamic_cast<AMDGPU const*>(&hardware);
+                    cuCount                  = pAMDGPU->computeUnitCount;
+                }
+
+                static std::string Type()
+                {
+                    return "WorkgroupMappingXCCCheck";
+                }
+
+                virtual bool operator()(ContractionProblemGemm const& problem) const override
+                {
+                    size_t WGMXCCG = (value[1] == -1) ? cuCount : value[1];
+                    return ((value[0] & (value[0] - 1)) == 0) && WGMXCCG % value[0] == 0;
+                }
+
+                virtual bool debugEval(ContractionProblemGemm const& problem,
+                                       std::ostream&                 stream) const override
+                {
+                    return debugEvalCmp(problem,
+                                        stream,
+                                        "cuCount",
+                                        (value[1] == -1) ? cuCount : value[1],
+                                        "%",
+                                        "WGMXCC",
+                                        value[0],
+                                        "==",
+                                        0);
+                }
+            };
         } // namespace Contraction
 
         /**
  * @}
  */
     } // namespace Predicates
-} // namespace Tensile
+} // namespace TensileLite

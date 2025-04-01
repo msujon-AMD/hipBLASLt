@@ -4,6 +4,9 @@ hipBLASLt is a library that provides general matrix-matrix operations. It has a 
 functionalities beyond a traditional BLAS library, such as adding flexibility to matrix data layouts, input
 types, compute types, and algorithmic implementations and heuristics.
 
+> [!NOTE]
+> The published hipBLASLt documentation is available at [hipBLASLt](https://rocm.docs.amd.com/projects/hipBLASLt/en/latest/index.html) in an organized, easy-to-read format, with search and a table of contents. The documentation source files reside in the hipBLASLt/docs folder of this repository. As with all ROCm projects, the documentation is open source. For more information, see [Contribute to ROCm documentation](https://rocm.docs.amd.com/en/latest/contribute/contributing.html).
+
 hipBLASLt uses the HIP programming language with an underlying optimized generator as its backend
 kernel provider.
 
@@ -19,24 +22,11 @@ D = Activation(alpha \cdot op(A) \cdot op(B) + beta \cdot op(C) + bias)
 Where *op( )* refers to in-place operations, such as transpose and non-transpose, and *alpha* and
 *beta* are scalars.
 
-The activation function supports GELU and ReLU. the bias vector matches matrix D rows and
+The activation function supports GELU, ReLU, and Swish (SiLU). the bias vector matches matrix D rows and
 broadcasts to all D columns.
 
-The following table provides data type support. Note that fp8 and bf8 are only supported on the
-gfx94x platform.
-
-| A | B | C | D | Compute(Scale) |
-| :--- | :--- | :--- | :--- | :--- |
-| fp32  | fp32  | fp32  | fp32  | fp32  |
-| fp16  | fp16  | fp16  | fp16  | fp32  |
-| fp16  | fp16  | fp16  | fp32  | fp32  |
-| bf16  | bf16  | bf16  | bf16  | fp32  |
-| fp8/bf8  | fp8/bf8  | fp32   | fp32  | fp32  |
-| fp8/bf8  | fp8/bf8  | fp16   | fp16  | fp32  |
-| fp8/bf8  | fp8/bf8  | bf16   | bf16  | fp32  |
-| fp8/bf8  | fp8/bf8  | fp8   | fp8  | fp32  |
-| fp8/bf8  | fp8/bf8  | bf8   | bf8  | fp32  |
-| int8  | int8 | int8  | int8  | int32 |
+For the supported data types, see
+[Supported data types](https://rocm.docs.amd.com/projects/hipBLASLt/en/latest/data-type-support.html).
 
 ## Documentation
 
@@ -74,10 +64,11 @@ Required software:
 
 * Git
 * CMake 3.16.8 or later
-* python3.7 or later
-* python3.7-venv or later
+* python3.8 or later
+* python3.8-venv or later
 * AMD [ROCm](https://github.com/RadeonOpenCompute/ROCm), version 5.5 or later
-* hipBLAS (for the header file)
+* [hipBLAS-common](https://github.com/ROCm/hipBLAS-common)
+* [roctracer](https://github.com/ROCm/roctracer)
 
 ## Build and install
 
@@ -90,6 +81,9 @@ git clone https://github.com/ROCmSoftwarePlatform/hipBLASLt
 # Go to hipBLASLt directory
 cd hipBLASLt
 
+# Run requirements.txt in folder tensilelite
+python3 -m pip install -r tensilelite/requirements.txt
+
 # Run install.sh script
 # Command line options:
 #   -h|--help         - prints help message
@@ -100,6 +94,8 @@ cd hipBLASLt
 ./install.sh -idc
 ```
 
+> **_NOTE:_**  To build hipBLASLt for ROCm <= 6.2, pass the `--legacy_hipblas_direct` flag to `install.sh`
+
 ## Unit tests
 
 All unit tests are located in `build/release/clients/staging/`. To build these tests, you must build
@@ -109,6 +105,15 @@ You can find more information at the following links:
 
 * [hipblaslt-test](clients/gtest/README.md)
 * [hipblaslt-bench](clients/benchmarks/README.md)
+
+## TensileLite Host Library Tests
+To build and run TensileLite Host Library Tests, use the following commands:
+``` 
+ cd tensilelite && mkdir build && cd build
+ cmake -DTENSILE_DISABLE_CTEST=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo  -DCMAKE_CXX_COMPILER=/opt/rocm/bin/amdclang++ -DTensile_ROOT=$(pwd)/../Tensile ../HostLibraryTests
+ make -j
+ ./TensileTests 
+```
 
 ## Contribute
 

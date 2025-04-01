@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,6 +27,7 @@
 #pragma once
 #ifndef ROCBLASLT_UTILS_HPP
 #define ROCBLASLT_UTILS_HPP
+#include "auxiliary.hpp"
 #include "handle.h"
 #include "utility.hpp"
 
@@ -43,12 +44,12 @@ inline rocblaslt_status getOriginalSizes(hipblasOperation_t opA,
     // values of num_* are values after been transposed, redirect to before which
     // been transposed. initialized m,n,k by NN.
     m = num_rows_a, n = num_cols_b, k = num_cols_a;
-    if(opA == HIPBLAS_OP_T)
+    if(opA == HIPBLAS_OP_T || opA == HIPBLAS_OP_C)
     {
         m = num_cols_a;
         k = num_rows_a;
     }
-    if(opB == HIPBLAS_OP_T)
+    if(opB == HIPBLAS_OP_T || opB == HIPBLAS_OP_C)
     {
         n = num_rows_b;
         if(k != num_cols_b)
@@ -64,6 +65,16 @@ inline rocblaslt_status getOriginalSizes(hipblasOperation_t opA,
     }
 
     return rocblaslt_status_success;
+}
+
+inline bool isValidOrderForDatatype(hipDataType datatype, hipblasLtOrder_t order)
+{
+    if((datatype == HIP_R_16F && order != HIPBLASLT_ORDER_COL16_4R8)
+       || (datatype == HIP_R_8F_E4M3_FNUZ && order != HIPBLASLT_ORDER_COL16_4R16))
+    {
+        return false;
+    }
+    return true;
 }
 
 /*******************************************************************************
@@ -137,26 +148,131 @@ inline rocblaslt_status validateMatmulDescrArgs(rocblaslt_handle       handle,
 }
 
 /*******************************************************************************
+ * Validate Matmul Swizzle Arguments
+ ******************************************************************************/
+inline rocblaslt_status validateMatmulSwizzleArgs(const rocblaslt_matmul_desc   matmul_descr,
+                                                  const rocblaslt_matrix_layout matA,
+                                                  const rocblaslt_matrix_layout matB,
+                                                  hipDataType                   a_type,
+                                                  hipDataType                   b_type,
+                                                  bool                          swizzleA,
+                                                  bool                          swizzleB)
+{
+    //support TN for swizzle
+    if(swizzleA && matmul_descr->op_A != HIPBLAS_OP_T)
+        return rocblaslt_status_invalid_value;
+
+    if(swizzleB && matmul_descr->op_B != HIPBLAS_OP_N)
+        return rocblaslt_status_invalid_value;
+
+    if(swizzleA && !isValidOrderForDatatype(a_type, matA->order))
+    {
+        log_error(__func__, "Error: Invalid Order for hipDataType A.");
+        return rocblaslt_status_invalid_value;
+    }
+
+    if(swizzleB && !isValidOrderForDatatype(b_type, matB->order))
+    {
+        log_error(__func__, "Error: Invalid Order for hipDataType B.");
+        return rocblaslt_status_invalid_value;
+    }
+
+    if(swizzleA && matA->ld != matA->m)
+        log_hints(__func__,
+                  "Warning: The lda parameter is ignored and disabled when swizzle_a is true. "
+                  "There's no need to set lda.");
+
+    if(swizzleB && matB->ld != matB->m)
+        log_hints(__func__,
+                  "Warning: The ldb parameter is ignored and disabled when swizzle_b is true. "
+                  "There's no need to set ldb.");
+
+    return rocblaslt_status_continue;
+}
+
+/*******************************************************************************
  * Validate Matmul Arguments
  ******************************************************************************/
-inline rocblaslt_status validateMatmulArgs(int64_t     m,
-                                           int64_t     n,
-                                           int64_t     k,
-                                           const void* alpha,
-                                           const void* a,
-                                           const void* b,
-                                           const void* beta,
-                                           const void* c,
-                                           const void* d,
-                                           int         num_batches_a  = 1,
-                                           int         num_batches_b  = 1,
-                                           int         num_batches_c  = 1,
-                                           int         num_batches_d  = 1,
-                                           int64_t     batch_stride_a = 0,
-                                           int64_t     batch_stride_b = 0,
-                                           int64_t     batch_stride_c = 0,
-                                           int64_t     batch_stride_d = 0)
+inline rocblaslt_status validateMatmulArgs(int64_t                       m,
+                                           int64_t                       n,
+                                           int64_t                       k,
+                                           const void*                   alpha,
+                                           const void*                   a,
+                                           const void*                   b,
+                                           const void*                   beta,
+                                           const void*                   c,
+                                           const void*                   d,
+                                           hipDataType                   type_a,
+                                           hipDataType                   type_b,
+                                           hipDataType                   type_c,
+                                           hipDataType                   type_d,
+                                           rocblaslt_compute_type        compute_type,
+                                           hipblasOperation_t            opA,
+                                           hipblasOperation_t            opB,
+                                           int                           num_batches_a  = 1,
+                                           int                           num_batches_b  = 1,
+                                           int                           num_batches_c  = 1,
+                                           int                           num_batches_d  = 1,
+                                           int64_t                       batch_stride_a = 0,
+                                           int64_t                       batch_stride_b = 0,
+                                           int64_t                       batch_stride_c = 0,
+                                           int64_t                       batch_stride_d = 0,
+                                           const rocblaslt_pointer_mode& pointermode
+                                           = rocblaslt_pointer_mode_host)
 {
+    rocblaslt_status status = rocblaslt_status_continue;
+
+    if(!(type_a == HIP_R_32F && type_b == HIP_R_32F && type_c == HIP_R_32F && type_d == HIP_R_32F)
+       && compute_type == rocblaslt_compute_f32_fast_xf32)
+        status = rocblaslt_status_not_implemented;
+    if(!((type_a == HIP_R_8I && type_b == HIP_R_8I && type_c == HIP_R_32I && type_d == HIP_R_32I)
+         || (type_a == HIP_R_8I && type_b == HIP_R_8I && type_c == HIP_R_8I && type_d == HIP_R_8I))
+       && compute_type == rocblaslt_compute_i32)
+        status = rocblaslt_status_not_implemented;
+    if(!strcmp(hip_datatype_to_string(type_a), hip_datatype_to_string(HIPBLASLT_DATATYPE_INVALID))
+       || !strcmp(hip_datatype_to_string(type_b),
+                  hip_datatype_to_string(HIPBLASLT_DATATYPE_INVALID))
+       || !strcmp(hip_datatype_to_string(type_c),
+                  hip_datatype_to_string(HIPBLASLT_DATATYPE_INVALID))
+       || !strcmp(hip_datatype_to_string(type_d),
+                  hip_datatype_to_string(HIPBLASLT_DATATYPE_INVALID))
+       || !strcmp(rocblaslt_compute_type_string(compute_type),
+                  rocblaslt_compute_type_string(ROCBLASLT_COMPUTE_TYPE_INVALID)))
+        status = rocblaslt_status_not_implemented;
+
+    if(status != rocblaslt_status_continue)
+    {
+        log_error(__func__,
+                  "invalid args",
+                  "datatype",
+                  "matA",
+                  hipDataType_to_string(type_a),
+                  "matB",
+                  hipDataType_to_string(type_b),
+                  "matC",
+                  hipDataType_to_string(type_c),
+                  "matD",
+                  hipDataType_to_string(type_d),
+                  "computeType",
+                  rocblaslt_compute_type_string(compute_type));
+        return status;
+    }
+
+    if(opA == HIPBLASLT_OPERATION_INVALID || opB == HIPBLASLT_OPERATION_INVALID)
+        status = rocblaslt_status_not_implemented;
+
+    if(status != rocblaslt_status_continue)
+    {
+        log_error(__func__,
+                  "invalid args",
+                  "op",
+                  "opA",
+                  hipblasOperation_to_string(opA),
+                  "opB",
+                  hipblasOperation_to_string(opB));
+        return status;
+    }
+
     // sizes must not be negative
     if(batch_stride_a < 0 || batch_stride_b < 0 || batch_stride_c < 0 || batch_stride_d < 0)
     {
@@ -183,31 +299,42 @@ inline rocblaslt_status validateMatmulArgs(int64_t     m,
     if(!beta)
         return rocblaslt_status_invalid_pointer;
 
+    // Update for the valid case: ((alpha_in_host && alpha=0) && (A=NULL || B=NULL))
+    bool alpha_A_B_violation = (!alpha || ((pointermode || (*((float*)alpha))) && (!a || !b)));
     // pointers must be valid
-    if(n && ((k && (!a || !b || !alpha)) || !c || !d))
+    if(n && ((k && alpha_A_B_violation) || !c || !d))
         return rocblaslt_status_invalid_pointer;
 
     return rocblaslt_status_continue;
 }
 
-inline rocblaslt_status rocblaslt_epilogue_valid_args(const rocblaslt_epilogue& epilogue,
-                                                      const int64_t&            num_rows_e,
-                                                      const int64_t&            num_cols_e,
-                                                      const hipDataType&        d_type,
-                                                      const hipDataType&        original_bias_type,
-                                                      const void*               e_ptr,
-                                                      const int64_t&            original_lde,
-                                                      const int64_t&            original_stride_e,
-                                                      const void*               original_bias,
-                                                      const void*  original_scaleAlphaVec,
-                                                      const void*  alpha,
-                                                      void*&       E,
-                                                      int64_t&     lde,
-                                                      int64_t&     batch_stride_e,
-                                                      void*&       bias,
-                                                      hipDataType& bias_type,
-                                                      void*&       scaleAlphaVec,
-                                                      bool&        gradient)
+inline rocblaslt_status
+    rocblaslt_epilogue_valid_args(const rocblaslt_epilogue& epilogue,
+                                  const int64_t&            num_rows_e,
+                                  const int64_t&            num_cols_e,
+                                  const hipDataType&        d_type,
+                                  const hipDataType&        original_bias_type,
+                                  const void*               e_ptr,
+                                  const hipDataType&        original_aux_type,
+                                  const int64_t&            original_lde,
+                                  const int64_t&            original_stride_e,
+                                  const void*               original_bias,
+                                  const void*               original_scaleAlphaVec,
+                                  const void*               alpha,
+                                  const RocblasltContractionProblem::ScalingFormat scaleAType,
+                                  const RocblasltContractionProblem::ScalingFormat scaleBType,
+                                  const uint32_t scaleABlockRowSize,
+                                  const uint32_t scaleABlockColSize,
+                                  const uint32_t scaleBBlockRowSize,
+                                  const uint32_t scaleBBlockColSize,
+                                  void*&         E,
+                                  hipDataType&   aux_type,
+                                  int64_t&       lde,
+                                  int64_t&       batch_stride_e,
+                                  void*&         bias,
+                                  hipDataType&   bias_type,
+                                  void*&         scaleAlphaVec,
+                                  bool&          gradient)
 {
     // Set status
     rocblaslt_status status = rocblaslt_status_continue;
@@ -236,10 +363,34 @@ inline rocblaslt_status rocblaslt_epilogue_valid_args(const rocblaslt_epilogue& 
             status = rocblaslt_status_invalid_pointer;
         E = (void*)e_ptr;
     }
+    aux_type       = original_aux_type;
     lde            = original_lde > 0 ? original_lde : num_rows_e;
     batch_stride_e = original_stride_e > 0 ? original_stride_e : original_lde * num_cols_e;
     if(E != nullptr && ((lde < num_rows_e) || (batch_stride_e < (num_cols_e * num_rows_e))))
         status = rocblaslt_status_invalid_value;
+    if(scaleAType != RocblasltContractionProblem::ScalingFormat::None
+       && scaleBType != RocblasltContractionProblem::ScalingFormat::None
+       && scaleAType != scaleBType)
+    {
+        log_error(__func__, "Scale A and Scale B must be both scalar, vector or block.");
+        status = rocblaslt_status_invalid_value;
+    }
+    if(scaleAType == RocblasltContractionProblem::ScalingFormat::Block)
+    {
+        if(scaleABlockRowSize != 32 || scaleABlockColSize != 1)
+        {
+            log_error(__func__, "ScaleA block row and column sizes currently only support 32x1");
+            status = rocblaslt_status_invalid_value;
+        }
+    }
+    if(scaleBType == RocblasltContractionProblem::ScalingFormat::Block)
+    {
+        if(scaleBBlockRowSize != 1 || scaleBBlockColSize != 32)
+        {
+            log_error(__func__, "ScaleB block row and column sizes currently only support 1x32");
+            status = rocblaslt_status_invalid_value;
+        }
+    }
     return status;
 }
 
@@ -275,11 +426,21 @@ inline rocblaslt_status rocblaslt_matmul_valid_args(const rocblaslt_matmul_desc 
                                                     hipDataType&                bias_type,
                                                     void*&                      scaleAlphaVec,
                                                     void*&                      E,
+                                                    hipDataType&                aux_type,
                                                     bool&                       gradient,
-                                                    rocblaslt_compute_type&     compute_type)
+                                                    rocblaslt_compute_type&     compute_type,
+                                                    bool                        swizzleA,
+                                                    bool                        swizzleB)
 {
     // Internal assign
     hipblasOperation_t opA = matmul_descr->op_A;
+    hipblasOperation_t opB = matmul_descr->op_B;
+
+    auto matmul_swizzle_status
+        = validateMatmulSwizzleArgs(matmul_descr, matA, matB, a_type, b_type, swizzleA, swizzleB);
+
+    if(matmul_swizzle_status != rocblaslt_status_continue)
+        return matmul_swizzle_status;
 
     // matrix A
     int64_t num_rows_a    = matA->m;
@@ -315,58 +476,68 @@ inline rocblaslt_status rocblaslt_matmul_valid_args(const rocblaslt_matmul_desc 
     n = num_cols_d;
     k = (opA == HIPBLAS_OP_N) ? num_cols_a : num_rows_a;
 
-    auto status = validateMatmulArgs(m,
-                                     n,
-                                     k,
-                                     alpha,
-                                     A,
-                                     B,
-                                     beta,
-                                     C,
-                                     D,
-                                     num_batches_a,
-                                     num_batches_b,
-                                     num_batches_c,
-                                     num_batches_d,
-                                     batch_stride_a,
-                                     batch_stride_b,
-                                     batch_stride_c,
-                                     batch_stride_d);
+    auto matmul_status = validateMatmulArgs(m,
+                                            n,
+                                            k,
+                                            alpha,
+                                            A,
+                                            B,
+                                            beta,
+                                            C,
+                                            D,
+                                            matA->type,
+                                            matB->type,
+                                            matC->type,
+                                            matD->type,
+                                            compute_type,
+                                            matmul_descr->op_A,
+                                            matmul_descr->op_B,
+                                            num_batches_a,
+                                            num_batches_b,
+                                            num_batches_c,
+                                            num_batches_d,
+                                            batch_stride_a,
+                                            batch_stride_b,
+                                            batch_stride_c,
+                                            batch_stride_d,
+                                            matmul_descr->pointermode);
 
-    if(status == rocblaslt_status_continue)
-    {
-        if(!(matA->type == HIP_R_32F && matB->type == HIP_R_32F && matC->type == HIP_R_32F
-             && matD->type == HIP_R_32F)
-           && compute_type == rocblaslt_compute_f32_fast_xf32)
-            status = rocblaslt_status_not_implemented;
-        if(!((matA->type == HIP_R_8I && matB->type == HIP_R_8I && matC->type == HIP_R_32I
-              && matD->type == HIP_R_32I)
-             || (matA->type == HIP_R_8I && matB->type == HIP_R_8I && matC->type == HIP_R_8I
-                 && matD->type == HIP_R_8I))
-           && compute_type == rocblaslt_compute_i32)
-            status = rocblaslt_status_not_implemented;
-    }
-    const void* alphaVecPtr = matmul_descr->pointermode ? alpha : nullptr;
-    if(status == rocblaslt_status_continue)
-        status = rocblaslt_epilogue_valid_args(matmul_descr->epilogue,
-                                               num_rows_d,
-                                               num_cols_d,
-                                               matD->type,
-                                               matmul_descr->bias_type,
-                                               matmul_descr->e,
-                                               matmul_descr->lde,
-                                               matmul_descr->stride_e,
-                                               matmul_descr->bias,
-                                               alphaVecPtr,
-                                               alpha,
-                                               E,
-                                               lde,
-                                               batch_stride_e,
-                                               bias,
-                                               bias_type,
-                                               scaleAlphaVec,
-                                               gradient);
-    return status;
+    const void* alphaVecPtr     = matmul_descr->pointermode ? alpha : nullptr;
+    auto        epilogue_status = rocblaslt_epilogue_valid_args(matmul_descr->epilogue,
+                                                         num_rows_d,
+                                                         num_cols_d,
+                                                         matD->type,
+                                                         matmul_descr->bias_type,
+                                                         matmul_descr->e,
+                                                         matmul_descr->aux_type,
+                                                         matmul_descr->lde,
+                                                         matmul_descr->stride_e,
+                                                         matmul_descr->bias,
+                                                         alphaVecPtr,
+                                                         alpha,
+                                                         matmul_descr->scaleAType,
+                                                         matmul_descr->scaleBType,
+                                                         matmul_descr->scaleABlockRowSize,
+                                                         matmul_descr->scaleABlockColSize,
+                                                         matmul_descr->scaleBBlockRowSize,
+                                                         matmul_descr->scaleBBlockColSize,
+                                                         E,
+                                                         aux_type,
+                                                         lde,
+                                                         batch_stride_e,
+                                                         bias,
+                                                         bias_type,
+                                                         scaleAlphaVec,
+                                                         gradient);
+
+    // rocblaslt_epilogue_valid_args must to be called otherwise bias_type will be garbage value
+    if(matmul_status != rocblaslt_status_continue)
+        return matmul_status;
+
+    if(epilogue_status != rocblaslt_status_continue)
+        return epilogue_status;
+
+    return rocblaslt_status_continue;
 }
 
 // Assign 1 to onePtr then set set the address to dst.

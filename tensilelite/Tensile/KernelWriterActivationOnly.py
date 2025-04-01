@@ -22,7 +22,7 @@
 
 from copy import deepcopy
 
-from .Common import globalParameters, CHeader
+from .Common import INDEX_CHARS
 from .KernelWriterBase import KernelWriterBase
 
 class KernelWriterActivationOnly(KernelWriterBase):
@@ -39,8 +39,8 @@ class KernelWriterActivationOnly(KernelWriterBase):
 
     # determine chars for fast access
     self.states.indexChars = []
-    for i in range(0, len(globalParameters["IndexChars"])):
-      self.states.indexChars.append(globalParameters["IndexChars"][i])
+    for i in range(0, len(INDEX_CHARS)):
+      self.states.indexChars.append(INDEX_CHARS[i])
     self.states.indexChars[self.state["ProblemType"]["Index0"]] = "0" + self.states.indexChars[self.state["ProblemType"]["Index0"]]
     self.states.indexChars[self.state["ProblemType"]["Index1"]] = "1" + self.states.indexChars[self.state["ProblemType"]["Index1"]]
     self.tileChar0 = self.states.indexChars[self.state["ProblemType"]["Index0"]]
@@ -72,7 +72,7 @@ class KernelWriterActivationOnly(KernelWriterBase):
     activationCDataType = self.state["ProblemType"]["ActivationComputeDataType"]
     enumName = "Tensile::ActivationType_%s"%activationCDataType.toChar()
     if self.state["ProblemType"]["ActivationType"] != 'none':
-      if self.state["ProblemType"]["ActivationType"] == 'all':
+      if self.state["ProblemType"]["ActivationType"] in ['all', 'hipblaslt_all']:
         kStr += "  %s const activationType,%s" % (enumName, self.endLine)
       for name in self.state["ProblemType"]["ActivationType"].getAdditionalArgStringList():
         kStr += "  %s const %s,%s" % (activationCDataType.toDevice(self.language), name, self.endLine)
@@ -187,7 +187,7 @@ class KernelWriterActivationOnly(KernelWriterBase):
     typeActivationStr = self.state["ProblemType"]["ActivationComputeDataType"].toDevice(self.language)
     if self.state["ProblemType"]["ActivationType"] != 'none':
       names = ""
-      if self.state["ProblemType"]["ActivationType"] == 'all':
+      if self.state["ProblemType"]["ActivationType"] in ['all', 'hipblaslt_all']:
         names += ", activationType"
       for name in self.state["ProblemType"]["ActivationType"].getAdditionalArgStringList():
         names += (", " + name)
@@ -209,7 +209,7 @@ class KernelWriterActivationOnly(KernelWriterBase):
 
 
   def getKernelName(self):
-    indexChars = globalParameters["IndexChars"]
+    indexChars = INDEX_CHARS
     # C dimensions
     name = "D"
     for i in range(0, self.state["ProblemType"]["NumIndicesC"]):
@@ -217,7 +217,7 @@ class KernelWriterActivationOnly(KernelWriterBase):
     name += "_"
     name += self.state["ProblemType"]["DestDataType"].toChar()
     if self.state["ProblemType"]["ActivationType"] != 'none':
-      if self.state["ProblemType"]["ActivationType"] == 'all':
+      if self.state["ProblemType"]["ActivationType"] in ['all', 'hipblaslt_all']:
         name += "_%s"%"A"
       else:
         name += "_%s"%str(self.state["ProblemType"]["ActivationType"]).upper()
@@ -229,11 +229,6 @@ class KernelWriterActivationOnly(KernelWriterBase):
 
   def getSourceFileString(self):
     fileString = ""
-    if not globalParameters["MergeFiles"]:
-      fileString += "\n"
-      fileString += "#include \"%s.h\"\n" % self.kernelName
-      fileString += "\n"
-
     fileString += self.functionSignature()
     fileString += self.kernelBody()
 
@@ -241,22 +236,6 @@ class KernelWriterActivationOnly(KernelWriterBase):
 
   def getHeaderFileString(self):
     fileString = "" # CHeader
-    if not globalParameters["MergeFiles"]:
-      fileString += CHeader
-      fileString += "#pragma once\n\n"
-      fileString += "\n"
-      fileString += "#include <KernelHeader.h>\n\n"
-      fileString += "#include <hip/hip_runtime.h>\n"
-      fileString += "#include <hip/hip_fp16.h>\n"
-      fileString += "\n"
-      activationCDataType = self.state["ProblemType"]["ActivationComputeDataType"]
-      if self.state["ProblemType"]["ActivationType"] == 'all':
-        fileString += "#include \"Tensile%sActivation%s_%s_%s.h\"\n"%(self.actGradientPrefix, \
-                                                                      self.gaurdStr, \
-                                                                      activationCDataType.toChar(), \
-                                                                      self.state["ProblemType"]["ActivationType"])
-      fileString += "\n"
-
     fileString += self.functionSignature()
     fileString += ";\n"
 

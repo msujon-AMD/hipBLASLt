@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,10 +24,12 @@
  *
  * ************************************************************************ */
 
+#include "UserDrivenTuningParser.hpp"
 #include "definitions.h"
 #include "handle.h"
 #include "rocblaslt.h"
 #include "rocblaslt_mat_utils.hpp"
+#include "rocroller_host.hpp"
 #include "tensile_host.hpp"
 #include "utility.hpp"
 
@@ -36,6 +38,7 @@
 #endif
 
 #include <hip/hip_runtime_api.h>
+#include <map>
 #include <unistd.h>
 #include <utility>
 
@@ -54,11 +57,218 @@ inline void assignAlphaBeta1(const rocblaslt_compute_type& compute_type, void* a
         *((int32_t*)alpha) = 1.f;
         *((int32_t*)beta)  = 1.f;
     }
+    else if(compute_type == rocblaslt_compute_f16)
+    {
+        *((hipblasLtHalf*)alpha) = 1.f;
+        *((hipblasLtHalf*)beta)  = 1.f;
+    }
     else
     {
         *((float*)alpha) = 1.f;
         *((float*)beta)  = 1.f;
     }
+}
+
+inline void setDefaultSwizzledBatchedStride(const rocblaslt_matrix_layout& matLayout,
+                                            int64_t&                       batch_stride)
+{
+    size_t MiM = 16, MiK = 0, MiKv = 0, PackK = 0;
+    if(matLayout->order == HIPBLASLT_ORDER_COL16_4R8)
+    {
+        //f16
+        MiK   = 16;
+        MiKv  = 4;
+        PackK = 16 / MiKv / 2;
+    }
+    else if(matLayout->order == HIPBLASLT_ORDER_COL16_4R16)
+    {
+        //f8
+        MiK   = 32;
+        MiKv  = 8;
+        PackK = 16 / MiKv / 1;
+    }
+    else
+        return;
+
+    size_t K_block = MiK * PackK;
+    //align to k for swizzleK and to m for 16
+    batch_stride = ((matLayout->n + MiM - 1) / MiM) * MiM * ((matLayout->m + K_block - 1) / K_block)
+                   * K_block;
+}
+
+inline void heuristicResult_copy(rocblaslt_matmul_heuristic_result* heuristicResultsDest,
+                                 rocblaslt_matmul_heuristic_result* heuristicResultsSrc,
+                                 size_t&                            maxWorkSpaceBytes,
+                                 size_t&                            required_workspace_size)
+{
+    memcpy(heuristicResultsDest->algo.data,
+           heuristicResultsSrc->algo.data,
+           sizeof(heuristicResultsDest->algo.data));
+    heuristicResultsDest->algo.max_workspace_bytes = maxWorkSpaceBytes;
+    heuristicResultsDest->algo.fallback            = false;
+    heuristicResultsDest->state                    = rocblaslt_status_success;
+    heuristicResultsDest->workspaceSize            = required_workspace_size;
+}
+
+inline bool
+    heuristicResult_check_duplicated(rocblaslt_matmul_heuristic_result* heuristicResultsArray,
+                                     rocblaslt_matmul_heuristic_result* SolutionsResult,
+                                     int&                               AlgoCount,
+                                     bool                               override_option)
+{
+
+    int index = -1;
+
+    for(int i = 0; i < AlgoCount; i++)
+    {
+        if(*(int*)(heuristicResultsArray[i].algo.data)
+           == *(int*)(SolutionsResult->algo.data)) //solution index
+            index = i;
+    }
+
+    if(override_option && index != -1)
+    {
+        for(int i = index; i < AlgoCount - 1; i++)
+        {
+            heuristicResultsArray[i] = heuristicResultsArray[i + 1];
+        }
+    }
+
+    return (index == -1) ? false : true;
+}
+
+// Preload problem/solution mappings
+bool problem_override_from_file(rocblaslt_handle&                 handle,
+                                rocblaslt_matmul_preference&      pref,
+                                RocblasltContractionProblem&      problem,
+                                rocblaslt_matmul_desc&            matmul_desc,
+                                rocblaslt_matmul_heuristic_result heuristicResultsArray[],
+                                const std::string&                file_path)
+{
+
+    bool success = false;
+    TensileLite::getContractionProblemsFromFile(file_path);
+    TensileLite::OverrideMap& m_override = TensileLite::OverrideMap::getMap();
+
+    if(m_override.size() == 0)
+    {
+        log_info(__func__, "No valid entries found in override file.");
+    }
+    else
+    {
+        std::vector<rocblaslt_matmul_heuristic_result> overrideResults;
+        std::vector<int>                               solutionIndex(1);
+        TensileLite::ProblemOverride prob_key(RocblasltContractionProblem2ProblemOverride(problem));
+        auto                         sol_iter = m_override.find(prob_key);
+
+        for(auto sol_idx = std::make_reverse_iterator(sol_iter.second);
+            !success && sol_idx != std::make_reverse_iterator(sol_iter.first);
+            sol_idx++)
+        {
+            solutionIndex[0] = sol_idx->second;
+
+            if(rocblaslt_status_success
+               == getSolutionsFromIndex(
+                   handle, solutionIndex, overrideResults, pref->max_workspace_bytes))
+            {
+
+                size_t required_workspace_size = 0;
+                auto&  tensile_data            = matmul_desc->m_data;
+
+                if(rocblaslt_status_success
+                   == isSolutionSupported(handle,
+                                          problem,
+                                          tensile_data,
+                                          &overrideResults[0].algo,
+                                          &required_workspace_size))
+                {
+
+                    heuristicResult_copy(&heuristicResultsArray[0],
+                                         &overrideResults[0],
+                                         pref->max_workspace_bytes,
+                                         required_workspace_size);
+                    success = true;
+                }
+            }
+        }
+
+        if(!success)
+        {
+            log_info(__func__, "No valid solution index found in override file.");
+        }
+        else
+        {
+            std::string mapping_result = "Find solution with index: ";
+            mapping_result += std::to_string(solutionIndex[0]);
+            log_info(__func__, mapping_result);
+        }
+    }
+
+    return success;
+}
+
+bool problem_override_from_file_cpp(
+    rocblaslt_handle&                               handle,
+    rocblaslt::RocGemmType&                         gemmType,
+    std::shared_ptr<void>                           gemmData,
+    size_t                                          workspaceSizeInBytes,
+    std::vector<rocblaslt_matmul_heuristic_result>& heuristicResultsArray,
+    const std::string&                              file_path)
+{
+
+    bool success = false;
+    TensileLite::getContractionProblemsFromFile(file_path);
+    TensileLite::OverrideMap& m_override = TensileLite::OverrideMap::getMap();
+
+    if(m_override.size() == 0)
+    {
+        log_info(__func__, "No valid entries found in override file.");
+    }
+    else
+    {
+        std::vector<rocblaslt_matmul_heuristic_result> overrideResults;
+        std::vector<int>                               solutionIndex(1);
+        TensileLite::ProblemOverride prob_key(TensileDataGemm2ProblemOverride(gemmData));
+        auto                         sol_iter = m_override.find(prob_key);
+
+        for(auto sol_idx = std::make_reverse_iterator(sol_iter.second);
+            !success && sol_idx != std::make_reverse_iterator(sol_iter.first);
+            sol_idx++)
+        {
+            solutionIndex[0]        = sol_idx->second;
+            size_t maxWorkspaceSize = std::numeric_limits<size_t>::max();
+            if(rocblaslt_status_success
+               == getSolutionsFromIndex(handle, solutionIndex, overrideResults, maxWorkspaceSize))
+            {
+                rocblaslt::RocTuningV2* tuning = nullptr;
+                if(rocblaslt_status_success
+                   == isSolutionSupported(handle,
+                                          static_cast<const rocblaslt::RocGemmType>(gemmType),
+                                          gemmData,
+                                          overrideResults[0].algo,
+                                          tuning,
+                                          workspaceSizeInBytes))
+                {
+                    overrideResults[0].workspaceSize = workspaceSizeInBytes;
+                    heuristicResultsArray.push_back(overrideResults[0]);
+                    success = true;
+                }
+            }
+        }
+
+        if(!success)
+        {
+            log_info(__func__, "No valid solution index found in override file.");
+        }
+        else
+        {
+            std::string mapping_result = "Find solution with index: ";
+            mapping_result += std::to_string(solutionIndex[0]);
+            log_info(__func__, mapping_result);
+        }
+    }
+
+    return success;
 }
 
 /******************************************************************************
@@ -80,11 +290,21 @@ RocblasltContractionProblem construct_rocblaslt_problem(rocblaslt_handle        
     int64_t     m, n, k, lda, ldb, ldc, ldd, lde, batch_stride_a, batch_stride_b, batch_stride_c,
         batch_stride_d, batch_stride_e;
     hipDataType            bias_type;
+    hipDataType            aux_type;
     hipDataType            a_type, b_type, c_type, d_type;
     rocblaslt_compute_type compute_type;
     void *                 bias = nullptr, *scaleAlphaVec = nullptr, *e = nullptr;
     bool                   gradient = false;
-    rocblaslt_status       isValid  = rocblaslt_matmul_valid_args(matmul_descr,
+    bool swizzleA = matA->order != HIPBLASLT_ORDER_COL && matA->order != HIPBLASLT_ORDER_ROW;
+    bool swizzleB = matB->order != HIPBLASLT_ORDER_COL && matB->order != HIPBLASLT_ORDER_ROW;
+
+    if(swizzleA && matA->batch_stride == 0)
+    {
+        //If batch_stride has never been assigned for swizzle, set it to the default value
+        setDefaultSwizzledBatchedStride(matA, matA->batch_stride);
+    }
+
+    rocblaslt_status isValid = rocblaslt_matmul_valid_args(matmul_descr,
                                                            dummy_ptr,
                                                            dummy_ptr,
                                                            dummy_ptr,
@@ -116,8 +336,11 @@ RocblasltContractionProblem construct_rocblaslt_problem(rocblaslt_handle        
                                                            bias_type,
                                                            scaleAlphaVec,
                                                            e,
+                                                           aux_type,
                                                            gradient,
-                                                           compute_type);
+                                                           compute_type,
+                                                           swizzleA,
+                                                           swizzleB);
     if(isValid != rocblaslt_status_continue)
     {
         m = 0;
@@ -135,6 +358,7 @@ RocblasltContractionProblem construct_rocblaslt_problem(rocblaslt_handle        
     void*              scaleC        = matmul_descr->scaleC;
     void*              scaleD        = matmul_descr->scaleD;
     void*              scaleE        = matmul_descr->scaleE;
+    void*              amaxD         = matmul_descr->amaxD;
 
     // Others
     constexpr bool strided_batch = true;
@@ -182,6 +406,7 @@ RocblasltContractionProblem construct_rocblaslt_problem(rocblaslt_handle        
                                         grouped_gemm,
                                         gradient,
                                         compute_type,
+                                        matmul_descr->scale_type,
                                         bias,
                                         scaleA,
                                         scaleB,
@@ -189,12 +414,22 @@ RocblasltContractionProblem construct_rocblaslt_problem(rocblaslt_handle        
                                         scaleD,
                                         scaleE,
                                         scaleAlphaVec,
+                                        matmul_descr->scaleAType,
+                                        matmul_descr->scaleBType,
+                                        matmul_descr->scaleABlockRowSize,
+                                        matmul_descr->scaleABlockColSize,
+                                        matmul_descr->scaleBBlockRowSize,
+                                        matmul_descr->scaleBBlockColSize,
                                         bias_type,
+                                        aux_type,
                                         epilogue,
+                                        amaxD,
                                         nullptr,
                                         maxWorkSpaceBytes,
                                         nullptr,
-                                        handle->Synchronizer};
+                                        handle->Synchronizer,
+                                        swizzleA,
+                                        swizzleB};
 
     return problem;
 }
@@ -246,7 +481,11 @@ rocblaslt_status rocblaslt_destroy(const rocblaslt_handle handle)
         return rocblaslt_status_invalid_value;
     }
     log_api(__func__, "handle", handle);
-    // Destruct
+// Destruct
+#ifdef USE_ROCROLLER
+    if(handle->rocroller_handle)
+        rocroller_destroy_handle(handle->rocroller_handle);
+#endif
     try
     {
         delete handle;
@@ -547,6 +786,7 @@ rocblaslt_status rocblaslt_matmul_desc_create(rocblaslt_matmul_desc* matmulDesc,
         {
             switch(computeType)
             {
+            case rocblaslt_compute_f16:
             case rocblaslt_compute_f32:
             case rocblaslt_compute_f32_fast_xf32:
             case rocblaslt_compute_f64:
@@ -557,6 +797,12 @@ rocblaslt_status rocblaslt_matmul_desc_create(rocblaslt_matmul_desc* matmulDesc,
             case rocblaslt_compute_f32_fast_bf8_fnuz:
             case rocblaslt_compute_f32_fast_f8bf8_fnuz:
             case rocblaslt_compute_f32_fast_bf8f8_fnuz:
+#ifdef ROCM_USE_FLOAT8
+            case rocblaslt_compute_f32_fast_f8:
+            case rocblaslt_compute_f32_fast_bf8:
+            case rocblaslt_compute_f32_fast_f8bf8:
+            case rocblaslt_compute_f32_fast_bf8f8:
+#endif
                 break;
             default:
                 log_error(__func__, "invalid compute type", computeType);
@@ -569,15 +815,15 @@ rocblaslt_status rocblaslt_matmul_desc_create(rocblaslt_matmul_desc* matmulDesc,
                 throw rocblaslt_status_invalid_value;
             }
 
-            *matmulDesc                 = new _rocblaslt_matmul_desc();
+            *matmulDesc = new _rocblaslt_matmul_desc();
 
-            (*matmulDesc)->compute_type = computeType;
+            (*matmulDesc)->compute_type          = computeType;
             (*matmulDesc)->compute_type_original = computeType;
-            (*matmulDesc)->scale_type   = scaleType;
-            auto computeTypeInit        = computeType == rocblaslt_compute_f32_fast_xf32
-                                              ? rocblaslt_compute_f32
-                                              : computeType;
-            auto dataType               = HIP_R_32F;
+            (*matmulDesc)->scale_type            = scaleType;
+            auto computeTypeInit                 = computeType == rocblaslt_compute_f32_fast_xf32
+                                                       ? rocblaslt_compute_f32
+                                                       : computeType;
+            auto dataType                        = HIP_R_32F;
             if(computeTypeInit == rocblaslt_compute_f64)
                 dataType = HIP_R_64F;
             else if(computeType == rocblaslt_compute_i32)
@@ -654,6 +900,16 @@ rocblaslt_compute_type _matmul_desc_determine_compute_type(rocblaslt_matmul_desc
             return rocblaslt_compute_f32_fast_f8bf8_fnuz;
         else if(tciA == HIP_R_8F_E5M2_FNUZ && tciB == HIP_R_8F_E4M3_FNUZ)
             return rocblaslt_compute_f32_fast_bf8f8_fnuz;
+#ifdef ROCM_USE_FLOAT8
+        else if(tciA == tciB && tciA == HIP_R_8F_E4M3)
+            return rocblaslt_compute_f32_fast_f8;
+        else if(tciA == tciB && tciA == HIP_R_8F_E5M2)
+            return rocblaslt_compute_f32_fast_bf8;
+        else if(tciA == HIP_R_8F_E4M3 && tciB == HIP_R_8F_E5M2)
+            return rocblaslt_compute_f32_fast_f8bf8;
+        else if(tciA == HIP_R_8F_E5M2 && tciB == HIP_R_8F_E4M3)
+            return rocblaslt_compute_f32_fast_bf8f8;
+#endif
     }
     return matmulDesc->compute_type_original;
 }
@@ -726,7 +982,14 @@ rocblaslt_status rocblaslt_matmul_desc_set_attribute(rocblaslt_matmul_desc      
                     return rocblaslt_status_invalid_value;
                 }
                 break;
+            case ROCBLASLT_MATMUL_DESC_A_SCALE_POINTER_VEC_EXT:
+                matmulDesc->scaleAType = RocblasltContractionProblem::ScalingFormat::Vector;
             case ROCBLASLT_MATMUL_DESC_A_SCALE_POINTER:
+                if(matmulAttr == ROCBLASLT_MATMUL_DESC_A_SCALE_POINTER
+                   && matmulDesc->scaleAType == RocblasltContractionProblem::ScalingFormat::None)
+                {
+                    matmulDesc->scaleAType = RocblasltContractionProblem::ScalingFormat::Scalar;
+                }
                 if(sizeof(void*) <= sizeInBytes)
                     memcpy(&matmulDesc->scaleA, buf, sizeof(void*));
                 else
@@ -735,12 +998,83 @@ rocblaslt_status rocblaslt_matmul_desc_set_attribute(rocblaslt_matmul_desc      
                     return rocblaslt_status_invalid_value;
                 }
                 break;
+            case ROCBLASLT_MATMUL_DESC_A_SCALE_MODE:
+                if(sizeof(hipblasLtMatmulMatrixScale_t) <= sizeInBytes)
+                {
+                    hipblasLtMatmulMatrixScale_t mode;
+                    memcpy(&mode, buf, sizeof(hipblasLtMatmulMatrixScale_t));
+                    switch(mode)
+                    {
+                    case HIPBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0:
+                        matmulDesc->scaleABlockRowSize = 32;
+                        matmulDesc->scaleABlockColSize = 1;
+                        matmulDesc->scaleAType = RocblasltContractionProblem::ScalingFormat::Block;
+                        break;
+                    case HIPBLASLT_MATMUL_MATRIX_SCALE_SCALAR_32F:
+                        matmulDesc->scaleABlockRowSize = 1;
+                        matmulDesc->scaleABlockColSize = 1;
+                        matmulDesc->scaleAType = RocblasltContractionProblem::ScalingFormat::Scalar;
+                        break;
+                    case HIPBLASLT_MATMUL_MATRIX_SCALE_VEC16_UE4M3:
+                    default:
+                        log_error(__func__,
+                                  "invalid A scale mode, currently only "
+                                  "HIPBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0 is supported",
+                                  mode);
+                        return rocblaslt_status_invalid_value;
+                    }
+                }
+                else
+                {
+                    log_error(__func__, "invalid A scale mode buf size", sizeInBytes);
+                    return rocblaslt_status_invalid_value;
+                }
+                break;
+            case ROCBLASLT_MATMUL_DESC_B_SCALE_POINTER_VEC_EXT:
+                matmulDesc->scaleBType = RocblasltContractionProblem::ScalingFormat::Vector;
             case ROCBLASLT_MATMUL_DESC_B_SCALE_POINTER:
+                if(matmulAttr == ROCBLASLT_MATMUL_DESC_B_SCALE_POINTER
+                   && matmulDesc->scaleBType == RocblasltContractionProblem::ScalingFormat::None)
+                {
+                    matmulDesc->scaleBType = RocblasltContractionProblem::ScalingFormat::Scalar;
+                }
                 if(sizeof(void*) <= sizeInBytes)
                     memcpy(&matmulDesc->scaleB, buf, sizeof(void*));
                 else
                 {
                     log_error(__func__, "invalid scaleB buf size", sizeInBytes);
+                    return rocblaslt_status_invalid_value;
+                }
+                break;
+            case ROCBLASLT_MATMUL_DESC_B_SCALE_MODE:
+                if(sizeof(hipblasLtMatmulMatrixScale_t) <= sizeInBytes)
+                {
+                    hipblasLtMatmulMatrixScale_t mode;
+                    memcpy(&mode, buf, sizeof(hipblasLtMatmulMatrixScale_t));
+                    switch(mode)
+                    {
+                    case HIPBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0:
+                        matmulDesc->scaleBBlockRowSize = 1;
+                        matmulDesc->scaleBBlockColSize = 32;
+                        matmulDesc->scaleBType = RocblasltContractionProblem::ScalingFormat::Block;
+                        break;
+                    case HIPBLASLT_MATMUL_MATRIX_SCALE_SCALAR_32F:
+                        matmulDesc->scaleBBlockRowSize = 1;
+                        matmulDesc->scaleBBlockColSize = 1;
+                        matmulDesc->scaleBType = RocblasltContractionProblem::ScalingFormat::Scalar;
+                        break;
+                    case HIPBLASLT_MATMUL_MATRIX_SCALE_VEC16_UE4M3:
+                    default:
+                        log_error(__func__,
+                                  "invalid B scale mode, currently only "
+                                  "HIPBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0 is supported",
+                                  mode);
+                        return rocblaslt_status_invalid_value;
+                    }
+                }
+                else
+                {
+                    log_error(__func__, "invalid B scale mode buf size", sizeInBytes);
                     return rocblaslt_status_invalid_value;
                 }
                 break;
@@ -818,10 +1152,19 @@ rocblaslt_status rocblaslt_matmul_desc_set_attribute(rocblaslt_matmul_desc      
                 break;
             case ROCBLASLT_MATMUL_DESC_AMAX_D_POINTER:
                 if(sizeof(void*) <= sizeInBytes)
-                    memcpy(&matmulDesc->amax_ptr, buf, sizeof(void*));
+                    memcpy(&matmulDesc->amaxD, buf, sizeof(void*));
                 else
                 {
-                    log_error(__func__, "invalid e buf size", sizeInBytes);
+                    log_error(__func__, "invalid amax buf size", sizeInBytes);
+                    return rocblaslt_status_invalid_value;
+                }
+                break;
+            case ROCBLASLT_MATMUL_DESC_EPILOGUE_AUX_DATA_TYPE:
+                if(sizeof(int32_t) <= sizeInBytes)
+                    memcpy(&matmulDesc->aux_type, buf, sizeof(int32_t));
+                else
+                {
+                    log_error(__func__, "invalid buf size", sizeInBytes);
                     return rocblaslt_status_invalid_value;
                 }
                 break;
@@ -947,6 +1290,7 @@ rocblaslt_status rocblaslt_matmul_desc_get_attribute(rocblaslt_matmul_desc      
                 memcpy(buf, &matmulDesc->bias, sizeof(void*));
                 break;
             case ROCBLASLT_MATMUL_DESC_A_SCALE_POINTER:
+            case ROCBLASLT_MATMUL_DESC_A_SCALE_POINTER_VEC_EXT:
                 if(sizeWritten)
                     *sizeWritten = sizeof(void*);
                 if(sizeInBytes < sizeof(void*))
@@ -956,7 +1300,41 @@ rocblaslt_status rocblaslt_matmul_desc_get_attribute(rocblaslt_matmul_desc      
                 }
                 memcpy(buf, &matmulDesc->scaleA, sizeof(void*));
                 break;
+            case ROCBLASLT_MATMUL_DESC_A_SCALE_MODE: //TODO: May need to handle default value too.
+                if(sizeWritten)
+                    *sizeWritten = sizeof(uint32_t);
+                if(sizeInBytes < sizeof(uint32_t))
+                {
+                    log_error(__func__, "invalid scale block A scale mode size", sizeInBytes);
+                    return rocblaslt_status_invalid_value;
+                }
+                else
+                {
+                    hipblasLtMatmulMatrixScale_t mode;
+                    if(matmulDesc->scaleABlockRowSize == 32 && matmulDesc->scaleABlockColSize == 1
+                       && matmulDesc->scaleAType
+                              == RocblasltContractionProblem::ScalingFormat::Block)
+                    {
+                        mode = HIPBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0;
+                    }
+                    else if(matmulDesc->scaleAType
+                            == RocblasltContractionProblem::ScalingFormat::Scalar)
+                    {
+                        mode = HIPBLASLT_MATMUL_MATRIX_SCALE_SCALAR_32F;
+                    }
+                    else
+                    {
+                        log_error(__func__,
+                                  "invalid A scale mode, currently only "
+                                  "HIPBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0 is supported",
+                                  mode);
+                        return rocblaslt_status_invalid_value;
+                    }
+                    memcpy(buf, &mode, sizeof(uint32_t));
+                }
+                break;
             case ROCBLASLT_MATMUL_DESC_B_SCALE_POINTER:
+            case ROCBLASLT_MATMUL_DESC_B_SCALE_POINTER_VEC_EXT:
                 if(sizeWritten)
                     *sizeWritten = sizeof(void*);
                 if(sizeInBytes < sizeof(void*))
@@ -966,6 +1344,39 @@ rocblaslt_status rocblaslt_matmul_desc_get_attribute(rocblaslt_matmul_desc      
                 }
                 memcpy(buf, &matmulDesc->scaleB, sizeof(void*));
                 break;
+            case ROCBLASLT_MATMUL_DESC_B_SCALE_MODE: //TODO: May need to handle default value too.
+                if(sizeWritten)
+                    *sizeWritten = sizeof(uint32_t);
+                if(sizeInBytes < sizeof(uint32_t))
+                {
+                    log_error(__func__, "invalid scale block B scale mode size", sizeInBytes);
+                    return rocblaslt_status_invalid_value;
+                }
+                else
+                {
+                    hipblasLtMatmulMatrixScale_t mode;
+                    if(matmulDesc->scaleBBlockRowSize == 1 && matmulDesc->scaleBBlockColSize == 32
+                       && matmulDesc->scaleBType
+                              == RocblasltContractionProblem::ScalingFormat::Block)
+                    {
+                        mode = HIPBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0;
+                    }
+                    else if(matmulDesc->scaleBType
+                            == RocblasltContractionProblem::ScalingFormat::Scalar)
+                    {
+                        mode = HIPBLASLT_MATMUL_MATRIX_SCALE_SCALAR_32F;
+                    }
+                    else
+                    {
+                        log_error(__func__,
+                                  "invalid B scale mode, currently only "
+                                  "HIPBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0 is supported",
+                                  mode);
+                        return rocblaslt_status_invalid_value;
+                    }
+                    memcpy(buf, &mode, sizeof(uint32_t));
+                }
+                break;
             case ROCBLASLT_MATMUL_DESC_POINTER_MODE:
                 if(sizeWritten)
                     *sizeWritten = sizeof(int32_t);
@@ -974,7 +1385,7 @@ rocblaslt_status rocblaslt_matmul_desc_get_attribute(rocblaslt_matmul_desc      
                     log_error(__func__, "invalid buf size", sizeInBytes);
                     return rocblaslt_status_invalid_value;
                 }
-                memcpy(buf, &matmulDesc->pointermode, sizeof(void*));
+                memcpy(buf, &matmulDesc->pointermode, sizeof(int32_t));
                 break;
             case ROCBLASLT_MATMUL_DESC_BIAS_DATA_TYPE:
                 if(sizeWritten)
@@ -994,7 +1405,17 @@ rocblaslt_status rocblaslt_matmul_desc_get_attribute(rocblaslt_matmul_desc      
                     log_error(__func__, "invalid buf size", sizeInBytes);
                     return rocblaslt_status_invalid_value;
                 }
-                memcpy(buf, &matmulDesc->amax_ptr, sizeof(void*));
+                memcpy(buf, &matmulDesc->amaxD, sizeof(void*));
+                break;
+            case ROCBLASLT_MATMUL_DESC_EPILOGUE_AUX_DATA_TYPE:
+                if(sizeWritten)
+                    *sizeWritten = sizeof(int32_t);
+                if(sizeInBytes < sizeof(int32_t))
+                {
+                    log_error(__func__, "invalid buf size", sizeInBytes);
+                    return rocblaslt_status_invalid_value;
+                }
+                memcpy(buf, &matmulDesc->aux_type, sizeof(int32_t));
                 break;
             case ROCBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_A_EXT:
                 if(sizeWritten)
@@ -1308,34 +1729,59 @@ rocblaslt_status
         hipDataType            d_type       = matD->type;
         rocblaslt_compute_type compute_type = matmul_desc->compute_type;
         auto&                  tensile_data = matmul_desc->m_data;
-        if(matmul_desc->amax_ptr != nullptr
-           && (matD->type == HIP_R_8F_E4M3_FNUZ || matD->type == HIP_R_8F_E5M2_FNUZ))
-        {
-            matC->type = HIP_R_32F;
-            matD->type = HIP_R_32F;
-        }
-        int8_t alpha[16] = {0};
-        int8_t beta[16]  = {0};
+        int8_t                 alpha[16]    = {0};
+        int8_t                 beta[16]     = {0};
         assignAlphaBeta1(compute_type, (void*)alpha, (void*)beta);
         //bias ptr can be set later after getting solution.
         bool dummy_bias_address = false;
         if(matmul_desc->bias == nullptr && is_bias_enabled(matmul_desc->epilogue))
         {
             dummy_bias_address = true;
-            matmul_desc->bias = &dummy_bias_address;
+            matmul_desc->bias  = &dummy_bias_address;
         }
         auto prob = construct_rocblaslt_problem(
             handle, matmul_desc, matA, matB, matC, matD, &alpha, &beta, pref->max_workspace_bytes);
-        status = getBestSolutions(prob,
-                                  handle,
-                                  tensile_data,
-                                  requestedAlgoCount,
-                                  heuristicResultsArray,
-                                  returnAlgoCount,
-                                  pref->max_workspace_bytes);
+
+        OverrideSingleton& override         = OverrideSingleton::getInstance();
+        bool               override_success = false;
+        if(override.env_mode)
+        {
+            override_success = problem_override_from_file(
+                handle, pref, prob, matmul_desc, heuristicResultsArray, override.file_path);
+            if(override_success)
+                requestedAlgoCount--;
+
+            log_api(__func__, "returnAlgoCount", override_success ? 1 : 0);
+        }
+
+        if(requestedAlgoCount > 0)
+        {
+            status = getBestSolutions(prob,
+                                      handle,
+                                      tensile_data,
+                                      requestedAlgoCount,
+                                      override_success ? &heuristicResultsArray[1]
+                                                       : heuristicResultsArray,
+                                      returnAlgoCount,
+                                      pref->max_workspace_bytes);
+        }
+
+        if(override_success)
+        {
+
+            int oriReturnAlgoCount = *returnAlgoCount;
+            if(!heuristicResult_check_duplicated(
+                   &heuristicResultsArray[1], &heuristicResultsArray[0], oriReturnAlgoCount, true))
+            {
+                (*returnAlgoCount)++;
+            }
+
+            requestedAlgoCount++;
+        }
+
         if(dummy_bias_address)
             matmul_desc->bias = nullptr;
-        log_api(__func__, "returnAlogCount", *returnAlgoCount);
+        log_api(__func__, "returnAlgoCount", *returnAlgoCount);
 
         //Try to get size independent solutions from getAllSolutions()
         if(requestedAlgoCount > *returnAlgoCount)
@@ -1349,14 +1795,11 @@ rocblaslt_status
                     *returnAlgoCount < requestedAlgoCount && i < allSolutionsResults.size();
                     i++)
                 {
-                    bool duplicated_sol = false;
                     size_t required_workspace_size = 0;
-                    for(int j = 0; j < oriReturnAlgoCount; j++)
-                        if(*(int*)(heuristicResultsArray[j].algo.data)
-                           == *(int*)(allSolutionsResults[i].algo.data)) //solution index
-                            duplicated_sol = true;
-
-                    if(duplicated_sol == true
+                    if(heuristicResult_check_duplicated(heuristicResultsArray,
+                                                        &allSolutionsResults[i],
+                                                        oriReturnAlgoCount,
+                                                        false)
                        || rocblaslt_status_success
                               != isSolutionSupported(handle,
                                                      prob,
@@ -1364,51 +1807,16 @@ rocblaslt_status
                                                      &allSolutionsResults[i].algo,
                                                      &required_workspace_size))
                         continue;
+
                     //append sol to heuristpicResultsArray
-                    memcpy(heuristicResultsArray[*returnAlgoCount].algo.data,
-                           allSolutionsResults[i].algo.data,
-                           sizeof(heuristicResultsArray[i].algo.data));
-                    heuristicResultsArray[*returnAlgoCount].algo.max_workspace_bytes
-                        = pref->max_workspace_bytes;
-                    heuristicResultsArray[*returnAlgoCount].algo.fallback = false;
-                    heuristicResultsArray[*returnAlgoCount].state = rocblaslt_status_success;
-                    heuristicResultsArray[*returnAlgoCount].workspaceSize
-                        = required_workspace_size;
+                    heuristicResult_copy(&heuristicResultsArray[*returnAlgoCount],
+                                         &allSolutionsResults[i],
+                                         pref->max_workspace_bytes,
+                                         required_workspace_size);
                     (*returnAlgoCount)++;
                 }
 
-                log_api(__func__, "final returnAlogCount", *returnAlgoCount);
-            }
-        }
-
-        if(matmul_desc->amax_ptr != nullptr
-           && (d_type == HIP_R_8F_E4M3_FNUZ || d_type == HIP_R_8F_E5M2_FNUZ)
-           && *returnAlgoCount >= 1)
-        {
-
-            size_t amax_workspace_size = matD->m * matD->n * 4; //only support fp32 D temp
-            int    new_returnAlgoCount = *returnAlgoCount;
-            //reset C D type
-            matC->type = c_type;
-            matD->type = d_type;
-            //log_api(__func__, "matD->type ", matD->type);
-
-            for(int i = 0; i < *returnAlgoCount; i++)
-            {
-                heuristicResultsArray[i].workspaceSize
-                    = heuristicResultsArray[i].workspaceSize + amax_workspace_size;
-                if(pref->max_workspace_bytes < heuristicResultsArray[i].workspaceSize)
-                {
-                    *returnAlgoCount = 0;
-                    log_api(__func__, "max workspace size is not enough for amax");
-                    break;
-                }
-            }
-
-            if(matD->ld != matD->m || matD->batch_count > 1)
-            {
-                log_api(__func__, "Amax doesn't support ld != m and multiple batch so far.");
-                *returnAlgoCount = 0;
+                log_api(__func__, "final returnAlgoCount", *returnAlgoCount);
             }
         }
 
@@ -1423,6 +1831,7 @@ rocblaslt_status
     }
     return rocblaslt_status_success;
 }
+
 #ifdef __cplusplus
 }
 #endif
@@ -1538,7 +1947,7 @@ rocblaslt_status rocblaslt_matmul_get_algos_from_index_cpp(
         size_t maxWorkspaceSize = std::numeric_limits<size_t>::max();
         status = getSolutionsFromIndex(handle, solutionIndex, heuristicResults, maxWorkspaceSize);
 
-        log_api(__func__, "returnAlogCount", heuristicResults.size());
+        log_api(__func__, "returnAlgoCount", heuristicResults.size());
         return status;
     }
     catch(const rocblaslt_status& status)
@@ -1558,6 +1967,16 @@ rocblaslt_status rocblaslt_is_algo_supported_cpp(rocblaslt_handle            han
     return isSolutionSupported(handle, gemmType, gemmData, algo, tuning, workspaceSizeInBytes);
 }
 
+rocblaslt_status rocblaslt_is_algo_supported_cpp(rocblaslt_handle              handle,
+                                                 rocblaslt::RocGemmType        gemmType,
+                                                 std::shared_ptr<void>         gemmData,
+                                                 rocblaslt_matmul_algo&        algo,
+                                                 const rocblaslt::RocTuningV2* tuning,
+                                                 size_t&                       workspaceSizeInBytes)
+{
+    return isSolutionSupported(handle, gemmType, gemmData, algo, tuning, workspaceSizeInBytes);
+}
+
 rocblaslt_status
     rocblaslt_algo_get_heuristic_cpp(rocblaslt_handle       handle,
                                      rocblaslt::RocGemmType gemmType,
@@ -1573,15 +1992,41 @@ rocblaslt_status
     }
     if(gemmType == rocblaslt::RocGemmType::ROCBLASLT_GROUPED_GEMM)
     {
-        log_api(__func__, "will be deprecated for groupedgemm in the future, please use get_all_algos instead");
+        log_api(
+            __func__,
+            "will be deprecated for groupedgemm in the future, please use get_all_algos instead");
     }
     rocblaslt_status status = rocblaslt_status_success;
     try
     {
-        status = getBestSolutions(
-            handle, gemmType, gemmData, workspaceBytes, requestedAlgoCount, results);
+        OverrideSingleton&                             override = OverrideSingleton::getInstance();
+        bool                                           override_success = false;
+        std::vector<rocblaslt_matmul_heuristic_result> override_result;
 
-        log_api(__func__, "returnAlogCount", results.size());
+        if(override.env_mode)
+        {
+            override_success = problem_override_from_file_cpp(
+                handle, gemmType, gemmData, workspaceBytes, override_result, override.file_path);
+
+            log_api(__func__, "returnAlgoCount", override_success ? 1 : 0);
+        }
+
+        if(requestedAlgoCount - override_result.size() > 0)
+            status
+                = getBestSolutions(handle,
+                                   gemmType,
+                                   gemmData,
+                                   workspaceBytes,
+                                   override_success ? requestedAlgoCount - 1 : requestedAlgoCount,
+                                   results);
+
+        if(override_success)
+        {
+
+            results.insert(results.begin(), override_result[0]);
+        }
+
+        log_api(__func__, "returnAlgoCount", results.size());
         if(status != rocblaslt_status_success)
         {
             throw status;
@@ -1590,9 +2035,10 @@ rocblaslt_status
         if(requestedAlgoCount > results.size())
         {
             std::vector<rocblaslt_matmul_heuristic_result> allSolutionsResults;
-            size_t workspaceSizeInBytes =  workspaceBytes;
+            size_t                                         workspaceSizeInBytes = workspaceBytes;
             if(rocblaslt_status_success
-               == getAllSolutions(gemmData, handle, gemmType, allSolutionsResults, workspaceSizeInBytes))
+               == getAllSolutions(
+                   gemmData, handle, gemmType, allSolutionsResults, workspaceSizeInBytes))
             {
                 int oriReturnAlgoCount = results.size();
                 for(int i = 0;
@@ -1604,21 +2050,22 @@ rocblaslt_status
                         if(*(int*)(results[j].algo.data)
                            == *(int*)(allSolutionsResults[i].algo.data)) //solution index
                             duplicated_sol = true;
-
+                    rocblaslt::RocTuningV2* tuning = nullptr;
                     if(duplicated_sol == true
                        || rocblaslt_status_success
-                              != isSolutionSupported(handle,
-                                                     static_cast<const rocblaslt::RocGemmType>(gemmType),
-                                                     gemmData,
-                                                     allSolutionsResults[i].algo,
-                                                     nullptr,
-                                                     workspaceSizeInBytes))
+                              != isSolutionSupported(
+                                  handle,
+                                  static_cast<const rocblaslt::RocGemmType>(gemmType),
+                                  gemmData,
+                                  allSolutionsResults[i].algo,
+                                  tuning,
+                                  workspaceSizeInBytes))
                         continue;
                     allSolutionsResults[i].workspaceSize = workspaceSizeInBytes;
                     results.push_back(allSolutionsResults[i]);
                 }
 
-                log_api(__func__, "final returnAlogCount", results.size());
+                log_api(__func__, "final returnAlgoCount", results.size());
             }
         }
     }
@@ -1707,12 +2154,12 @@ void rocblaslt_log_error(const char* func, const char* var, const char* msg)
     log_error(func, var, msg);
 }
 
-extern "C" int rocblaslt_matmul_is_tuned(rocblaslt_handle handle,
-                              rocblaslt_matmul_desc matmul_descr,
-                              rocblaslt_matrix_layout matA,
-                              rocblaslt_matrix_layout matB,
-                              rocblaslt_matrix_layout matC,
-                              rocblaslt_matrix_layout matD)
+extern "C" int rocblaslt_matmul_is_tuned(rocblaslt_handle        handle,
+                                         rocblaslt_matmul_desc   matmul_descr,
+                                         rocblaslt_matrix_layout matA,
+                                         rocblaslt_matrix_layout matB,
+                                         rocblaslt_matrix_layout matC,
+                                         rocblaslt_matrix_layout matD)
 {
     if(handle == nullptr || matmul_descr == nullptr || matA == nullptr || matB == nullptr
        || matC == nullptr || matD == nullptr)
@@ -1721,23 +2168,24 @@ extern "C" int rocblaslt_matmul_is_tuned(rocblaslt_handle handle,
         return -1;
     }
 
-    hipDataType            a_type       = matA->type;
-    hipDataType            b_type       = matB->type;
-    hipDataType            c_type       = matC->type;
-    hipDataType            d_type       = matD->type;
-    rocblaslt_compute_type compute_type = matmul_descr->compute_type;
-    auto&                  gemmData     = matmul_descr->m_data;
-    float alpha = 1.f;
-    float beta = 0.f;
-    constexpr size_t max_workspace_bytes = 32 * 1024 * 1024;
-    void* alphaf = &alpha;
-    void* betaf  = &beta;
-    auto  prob   = construct_rocblaslt_problem(
+    hipDataType            a_type              = matA->type;
+    hipDataType            b_type              = matB->type;
+    hipDataType            c_type              = matC->type;
+    hipDataType            d_type              = matD->type;
+    rocblaslt_compute_type compute_type        = matmul_descr->compute_type;
+    auto&                  gemmData            = matmul_descr->m_data;
+    float                  alpha               = 1.f;
+    float                  beta                = 0.f;
+    constexpr size_t       max_workspace_bytes = 32 * 1024 * 1024;
+    void*                  alphaf              = &alpha;
+    void*                  betaf               = &beta;
+    auto                   prob                = construct_rocblaslt_problem(
         handle, matmul_descr, matA, matB, matC, matD, alphaf, betaf, max_workspace_bytes);
-    auto &tensile_data = matmul_descr->m_data;
-    auto sols = getBestRawSolutions(prob, handle, tensile_data, 1, max_workspace_bytes);
+    auto& tensile_data = matmul_descr->m_data;
+    auto  sols         = getBestRawSolutions(prob, handle, tensile_data, 1, max_workspace_bytes);
 
-    if (sols.size() && sols.front()->tag == Tensile::ContractionSolution::MatchingTag::Equal) {
+    if(sols.size() && sols.front()->tag == TensileLite::ContractionSolution::MatchingTag::Equal)
+    {
         return 1;
     }
 

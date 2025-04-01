@@ -1,5 +1,5 @@
 # ########################################################################
-# Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -30,6 +30,8 @@ if(BUILD_VERBOSE)
   include(../cmake/Verbose.cmake)
 endif()
 
+include(../cmake/Utilities.cmake)
+
 # Configure a header file to pass the hipBLASLt version
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt-version.h.in"
                "${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt-version.h"
@@ -40,8 +42,10 @@ configure_file( "${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt.h" "${PROJECT_BIN
 configure_file( "${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt-ext.hpp" "${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt-ext.hpp" COPYONLY)
 configure_file( "${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt-types.h" "${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt-types.h" COPYONLY)
 configure_file( "${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt_xfloat32.h" "${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt_xfloat32.h" COPYONLY)
+configure_file( "${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt_float4.h" "${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt_float4.h" COPYONLY)
+configure_file( "${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt_float6.h" "${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt_float6.h" COPYONLY)
 configure_file( "${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt_float8.h" "${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt_float8.h" COPYONLY)
-configure_file( "${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt_hip_f8_impl.h" "${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt_hip_f8_impl.h" COPYONLY)
+configure_file( "${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt_float8_bc.h" "${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt_float8_bc.h" COPYONLY)
 configure_file( "${CMAKE_CURRENT_SOURCE_DIR}/include/hipblaslt-ext-op.h" "${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt-ext-op.h" COPYONLY)
 
 # Public hipBLASLt headers
@@ -49,8 +53,10 @@ set(hipblaslt_headers_public
   include/hipblaslt.h
   include/hipblaslt-ext.hpp
   include/hipblaslt_xfloat32.h
+  include/hipblaslt_float4.h
+  include/hipblaslt_float6.h
   include/hipblaslt_float8.h
-  include/hipblaslt_hip_f8_impl.h
+  include/hipblaslt_float8_bc.h
   include/hipblaslt-ext-op.h
   ${PROJECT_BINARY_DIR}/include/hipblaslt/hipblaslt-version.h
 )
@@ -70,12 +76,11 @@ set(INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR})
 include(src/CMakeLists.txt)
 
 # Create hipBLASLt library
-add_library(hipblaslt ${hipblaslt_source} ${hipblaslt_headers_public})
+add_library(hipblaslt ${hipblaslt_source} ${RocRoller_SRC} ${hipblaslt_headers_public})
 add_library(roc::hipblaslt ALIAS hipblaslt)
 
 # Target compile definitions
 if(NOT BUILD_CUDA)
-if( BUILD_WITH_TENSILE )
 
   if( BUILD_SHARED_LIBS )
     target_link_libraries( hipblaslt PRIVATE TensileHost )
@@ -103,32 +108,18 @@ if( BUILD_WITH_TENSILE )
     list(TRANSFORM TensileHost_SOURCES PREPEND "${TensileHost_SOURCE_DIR}${seperator}")
     # add dependent sources from TensileHost for static build
     target_sources(hipblaslt PRIVATE ${TensileHost_SOURCES})
-
-    # recreate LLVM static dependencies
-    if (${Tensile_LIBRARY_FORMAT} STREQUAL "yaml")
-      find_package(LLVM 13.0 QUIET CONFIG)
-      if(NOT LLVM_FOUND)
-          find_package(LLVM 12.0 QUIET CONFIG)
-          if(NOT LLVM_FOUND)
-              find_package(LLVM REQUIRED CONFIG)
-          endif()
-      endif()
-      find_library(LLVMObjectYAML_LIBRARY
-        NAMES LLVMObjectYAML
-        PATHS ${LLVM_LIBRARY_DIR})
-      message("LLVMObjectYAML_LIBRARY: ${LLVMObjectYAML_LIBRARY}")
-
-      target_link_libraries(hipblaslt PRIVATE LLVMObjectYAML )  # match tensile
-    endif()
   endif()
 
   target_compile_definitions(hipblaslt PRIVATE ${TENSILE_DEFINES} )
-endif()
 
-    target_compile_options(hipblaslt PRIVATE -Wno-unused-command-line-argument )
-    target_compile_definitions(hipblaslt PRIVATE ROCM_USE_FLOAT16 __HIP_PLATFORM_AMD__)
+  target_compile_options(hipblaslt PRIVATE -Wno-unused-command-line-argument )
+  target_compile_definitions(hipblaslt PRIVATE ROCM_USE_FLOAT16 __HIP_PLATFORM_AMD__)
 else()
     target_compile_definitions(hipblaslt PRIVATE __HIP_PLATFORM_NVIDIA__)
+endif()
+
+if( LEGACY_HIPBLAS_DIRECT )
+  target_compile_definitions(hipblaslt PUBLIC LEGACY_HIPBLAS_DIRECT )
 endif()
 
 # Target compile features
@@ -141,9 +132,18 @@ target_include_directories(hipblaslt
                            PUBLIC  $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/library/include>
                                    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
                                    $<BUILD_INTERFACE:${HIP_INCLUDE_DIRS}>
-                                   $<BUILD_INTERFACE:${HIPBLAS_INCLUDE_DIRS}>
                                    $<INSTALL_INTERFACE:include>
 )
+
+if( LEGACY_HIPBLAS_DIRECT )
+  target_include_directories(hipblaslt
+                             PUBLIC  $<BUILD_INTERFACE:${HIPBLAS_INCLUDE_DIRS}>
+  )
+else()
+  target_include_directories(hipblaslt
+                             PUBLIC  $<BUILD_INTERFACE:${HIPBLAS-COMMON_INCLUDE_DIRS}>
+  )
+endif()
 
 if(BUILD_CUDA)
 target_include_directories(hipblaslt
@@ -160,8 +160,35 @@ endif()
 if(NOT BUILD_CUDA)
 # Target link libraries
   target_link_libraries(hipblaslt PRIVATE hip::device ${DL_LIB})
-else()
-  target_link_libraries(hipblaslt PRIVATE ${CUDA_cublaslt_LIBRARY})
+endif()
+
+if(HIPBLASLT_ENABLE_MARKER)
+  target_link_libraries(hipblaslt PRIVATE -lroctx64)
+endif()
+
+if( NOT BUILD_CUDA AND NOT LEGACY_HIPBLAS_DIRECT )
+  target_link_libraries(hipblaslt INTERFACE roc::hipblas-common)
+endif()
+
+# RocRoller integration
+include(FetchContent)
+if(USE_ROCROLLER)
+  _save_var(BUILD_TESTING)
+  set(BUILD_CLIENTS OFF)
+  _save_var(BUILD_CLIENTS)
+  set(BUILD_TESTING OFF)
+
+  FetchContent_Declare(
+    rocRoller
+    GIT_REPOSITORY https://github.com/ROCm/rocRoller.git
+    GIT_TAG 33fb58b76df640f98726b90a45fc5b9aa3e8af3b
+  )
+  FetchContent_MakeAvailable(rocRoller)
+  target_link_libraries(hipblaslt PRIVATE rocroller_interface)
+  add_definitions(-DUSE_ROCROLLER)
+
+  _restore_var(BUILD_TESTING)
+  _restore_var(BUILD_CLIENTS)
 endif()
 
 # Target properties
@@ -201,17 +228,33 @@ if ( NOT BUILD_CUDA )
     else()
       set( HIPBLASLT_TENSILE_LIBRARY_DIR "\${CPACK_PACKAGING_INSTALL_PREFIX}${CMAKE_INSTALL_LIBDIR}/hipblaslt" CACHE PATH "path to tensile library" )
     endif()
-    rocm_install(
-      DIRECTORY ${CMAKE_BINARY_DIR}/Tensile/library
-      DESTINATION ${HIPBLASLT_TENSILE_LIBRARY_DIR}
-      COMPONENT ${CMAKE_INSTALL_DEFAULT_COMPONENT})
+# For ASAN package, Tensile library files are not required
+    if( NOT ENABLE_ASAN_PACKAGING )
+    if( BUILD_SHARED_LIBS )
+      set( TENSILE_DATA_COMPONENT_NAME ${CMAKE_INSTALL_DEFAULT_COMPONENT_NAME} )
+    else()
+      set( TENSILE_DATA_COMPONENT_NAME devel )
+    endif()
+
+      rocm_install(
+        DIRECTORY ${CMAKE_BINARY_DIR}/Tensile/library
+        DESTINATION ${HIPBLASLT_TENSILE_LIBRARY_DIR}
+        COMPONENT ${TENSILE_DATA_COMPONENT_NAME})
+    endif()
 endif()
 
 # Export targets
 if(NOT BUILD_CUDA)
-  rocm_export_targets(TARGETS roc::hipblaslt
-                      DEPENDS PACKAGE hip
-                      NAMESPACE roc::)
+  if( LEGACY_HIPBLAS_DIRECT )
+    rocm_export_targets(TARGETS roc::hipblaslt
+                        DEPENDS PACKAGE hip
+                        NAMESPACE roc::)
+  else()
+    rocm_export_targets(TARGETS roc::hipblaslt
+                        DEPENDS PACKAGE hip
+                        DEPENDS PACKAGE hipblas-common
+                        NAMESPACE roc::)
+  endif()
 else()
   rocm_export_targets(TARGETS roc::hipblaslt
                       PREFIX hipblaslt

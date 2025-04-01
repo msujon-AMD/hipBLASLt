@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2022 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -36,23 +36,13 @@ from copy import deepcopy
 from . import LibraryIO
 
 from . import ClientWriter
-from .TensileInstructions import getGfxName
-from .Common import assignGlobalParameters, ensurePath, globalParameters, \
-    gfxArch, printExit, getArchitectureName
+from Tensile.Common import ensurePath, printExit
+from Tensile.Common.Architectures import isaToGfx, gfxToSwCodename, detectGlobalCurrentISA
+from Tensile.Common.GlobalParameters import assignGlobalParameters
 from .SolutionStructs import ProblemSizes
+from .Toolchain.Validators import ToolchainDefaults, validateToolchain
 
 
-def getArchitecture(isaName):
-    archid = getGfxName(isaName)
-    return getArchitectureName(archid)
-
-def isValidArch(archName, currentArch):
-    arch = gfxArch(archName)
-    return currentArch == arch
-
-##############################################################################
-# createLibraryForBenchmark
-##############################################################################
 def createLibraryForBenchmark(logicPath, libraryPath, currentPath):
     """
     takes the path of existing logic files as input and adds the summation
@@ -62,8 +52,8 @@ def createLibraryForBenchmark(logicPath, libraryPath, currentPath):
 
     pythonExePath = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bin", "TensileCreateLibrary")
     args = [pythonExePath, \
-        "--merge-files", "--new-client-only", "--no-short-file-names", "--no-library-print-debug", \
-        "--architecture=all", "--code-object-version=default", "--cxx-compiler=hipcc", "--library-format=yaml", \
+        "--new-client-only", "--no-short-file-names", \
+        "--architecture=all", "--code-object-version=default", "--library-format=yaml", \
         logicPath, libraryPath, "HIP"]
 
     try:
@@ -75,12 +65,16 @@ def GenerateSummations(userArgs):
 
     inputLogicPath = userArgs[0]
     outputPath = userArgs[1]
-    assignGlobalParameters({})
+    isaInfoMap = assignGlobalParameters({})
+    cxxCompiler, cCompiler, enumerator = validateToolchain(ToolchainDefaults.CXX_COMPILER, 
+                                                           ToolchainDefaults.C_COMPILER,
+                                                           ToolchainDefaults.DEVICE_ENUMERATOR)
 
-    currentISA = globalParameters["CurrentISA"]
-    currentArchitecture = getArchitecture(currentISA)
+    currentISA = detectGlobalCurrentISA(0, enumerator)
+    gfxName = isaToGfx(currentISA)
+    commonName = gfxToSwCodename(gfxName)
 
-    globPath = os.path.join(inputLogicPath, "{}*".format(currentArchitecture))
+    globPath = os.path.join(inputLogicPath, "{}*".format(commonName))
     logicFileNames = glob.glob(globPath)
 
     for logicFileName in logicFileNames:
@@ -102,7 +96,7 @@ def GenerateSummations(userArgs):
         # same as the initial logic with the summation model added. To preseve the original
         # logic we also read in the raw unaltered version of the logic and stage the content
         # to write the final logic.
-        logic    = LibraryIO.parseLibraryLogicFile(logicFileName)
+        logic    = LibraryIO.parseLibraryLogicFile(logicFileName, cxxCompiler, isaInfoMap)
         rawLogic = LibraryIO.rawLibraryLogic(logicFileName)
 
         # If we cannot read the logic file then skip it
@@ -136,7 +130,7 @@ def GenerateSummations(userArgs):
         scriptPath = ensurePath(os.path.join(outputPath, logicFileStem, "script"))
 
         ClientWriter.CreateBenchmarkClientParametersForSizes(libraryPath, problemSizes, dataFilePath, configFile, problemTypeObj)
-        ClientWriter.runNewClient(scriptPath, configFile, clientBuildDir)
+        ClientWriter.runNewClient(scriptPath, configFile, clientBuildDir, cxxCompiler, cCompiler)
 
         tensileLibraryFile = os.path.join(libPath, "library", "TensileLibrary.yaml")
 

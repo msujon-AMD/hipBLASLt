@@ -1,5 +1,5 @@
 TestParameters:
-  marks: [skip-gfx1100, skip-gfx1101, skip-gfx1102] # not supported yet
+  marks: [skip-gfx1100, skip-gfx1101, skip-gfx1102, skip-gfx1200, skip-gfx1201] # not supported yet
 
 GlobalParameters:
   NumElementsToValidate: -1
@@ -8,7 +8,6 @@ GlobalParameters:
   PrintSolutionRejectionReason: True
   Device: 0
   CMakeBuildType: Release
-  MergeFiles: False
   KernelTime: True
   MaxWorkspaceSize: 13421772800
   DataInitTypeAlpha: 1

@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+ * Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,10 +27,11 @@
 #include "hipblaslt_datatype2string.hpp"
 #include "hipblaslt_test.hpp"
 #include "testing_matmul.hpp"
-#include "type_dispatch.hpp"
 #include <cctype>
 #include <cstring>
 #include <type_traits>
+
+#include <gtest/gtest-spi.h>
 
 namespace
 {
@@ -39,50 +40,14 @@ namespace
     // matmul
     // ----------------------------------------------------------------------------
 
-    // In the general case of <Ti, To, Tc>, these tests do not apply, and if this
-    // functor is called, an internal error message is generated. When converted
-    // to bool, this functor returns false.
-    template <typename TiA,
-              typename TiB = TiA,
-              typename To  = TiB,
-              typename Tc  = To,
-              typename TciA = TiA,
-              typename TciB = TiB,
-              typename     = void>
-    struct matmul_testing : hipblaslt_test_invalid
-    {
-    };
-
-    // When Ti = To = Tc != void, this test applies.
-    // When converted to bool, this functor returns true.
-    template <typename TiA, typename TiB, typename To, typename Tc, typename TciA, typename TciB>
-    struct matmul_testing<
-        TiA,
-        TiB,
-        To,
-        Tc,
-        TciA,
-        TciB,
-        std::enable_if_t<
-            (std::is_same<TiA, hipblasLtHalf>{} && std::is_same<TiB, hipblasLtHalf>{})
-            || (std::is_same<TiA, hip_bfloat16>{} && std::is_same<TiB, hip_bfloat16>{})
-            || (std::is_same<TiA, float>{} && std::is_same<TiB, float>{})
-            || (std::is_same<TiA, hipblaslt_f8_fnuz>{} && std::is_same<TiB, hipblaslt_f8_fnuz>{})
-            || (std::is_same<TiA, hipblaslt_bf8_fnuz>{} && std::is_same<TiB, hipblaslt_f8_fnuz>{})
-            || (std::is_same<TiA, hipblaslt_f8_fnuz>{} && std::is_same<TiB, hipblaslt_bf8_fnuz>{})
-            || (std::is_same<TiA, hipblaslt_bf8_fnuz>{} && std::is_same<TiB, hipblaslt_bf8_fnuz>{})
-            || (std::is_same<TiA, double>{} && std::is_same<TiB, double>{})
-            || (std::is_same<TiA, hipblasLtInt8>{} && std::is_same<TiB, hipblasLtInt8>{})
-            || (std::is_same<TiA, hipblaslt_f8_fnuz>{} && std::is_same<TiB, hipblasLtHalf>{})
-            || (std::is_same<TiA, hipblasLtHalf>{} && std::is_same<TiB, hipblaslt_f8_fnuz>{})>>
-        : hipblaslt_test_valid
+    struct matmul_testing : hipblaslt_test_valid
     {
         void operator()(const Arguments& arg)
         {
             if(!strcmp(arg.function, "matmul"))
-                testing_matmul<TiA, TiB, To, Tc, TciA, TciB>(arg);
+                testing_matmul(arg);
             else if(!strcmp(arg.function, "matmul_bad_arg"))
-                testing_matmul_bad_arg<TiA, TiB, To, Tc, TciA, TciB>(arg);
+                testing_matmul_bad_arg(arg);
             else
                 FAIL() << "Internal error: Test called with unknown function: " << arg.function;
         }
@@ -93,7 +58,7 @@ namespace
         // Filter for which types apply to this suite
         static bool type_filter(const Arguments& arg)
         {
-            return hipblaslt_matmul_dispatch<type_filter_functor>(arg);
+            return type_filter_functor{}(arg);
         }
 
         // Filter for which functions apply to this suite
@@ -140,6 +105,8 @@ namespace
                     if(arg.use_e)
                     {
                         name << "_AUX";
+                        if(arg.aux_type != HIPBLASLT_DATATYPE_INVALID)
+                            name << "_" << hip_datatype_to_string(arg.aux_type);
                     }
                 }
 
@@ -156,11 +123,19 @@ namespace
 
                 name << '_' << arg.batch_count;
 
-                if(arg.scaleA)
+                if(arg.scaleA == hipblaslt_scaling_format::Scalar)
                     name << "_SA";
+                else if(arg.scaleA == hipblaslt_scaling_format::Vector)
+                    name << "_SAV";
+                else if(arg.scaleA == hipblaslt_scaling_format::Block)
+                    name << "_SAMX";
 
-                if(arg.scaleB)
+                if(arg.scaleB == hipblaslt_scaling_format::Scalar)
                     name << "_SB";
+                else if(arg.scaleB == hipblaslt_scaling_format::Vector)
+                    name << "_SBV";
+                else if(arg.scaleB == hipblaslt_scaling_format::Block)
+                    name << "_SBMX";
 
                 if(arg.scaleC)
                     name << "_SC";
@@ -211,8 +186,50 @@ namespace
 
     TEST_P(matmul_test, matmul)
     {
-        RUN_TEST_ON_THREADS_STREAMS(hipblaslt_matmul_dispatch<matmul_testing>(GetParam()));
+        RUN_TEST_ON_THREADS_STREAMS(matmul_testing{}(GetParam()));
     }
     INSTANTIATE_TEST_CATEGORIES(matmul_test);
+
+#ifdef USE_ROCROLLER
+    // ----------------------------------------------------------------------------
+    // rocRoller
+    // ----------------------------------------------------------------------------
+
+    struct rocroller_predicate_testing : hipblaslt_test_valid
+    {
+        void operator()(const Arguments& arg)
+        {
+            testing_matmul(arg);
+        }
+    };
+
+    struct rocroller_predicate_test
+        : RocBlasLt_Test<rocroller_predicate_test, rocroller_predicate_testing>
+    {
+        static bool type_filter(const Arguments& arg)
+        {
+            return type_filter_functor{}(arg);
+        }
+
+        static bool function_filter(const Arguments& arg)
+        {
+            return !strcmp(arg.function, "rocroller_predicate");
+        }
+
+        static std::string name_suffix(const Arguments& arg)
+        {
+            return matmul_test::name_suffix(arg);
+        }
+    };
+
+    TEST_P(rocroller_predicate_test, unrollXYK)
+    {
+        // rocRoller has predicates that check the dimensions (M/N/K) must be
+        // multiples of the work group sizes. This test set the K dimension
+        // to not be a multiple, and thus we shall see failure.
+        EXPECT_FATAL_FAILURE(rocroller_predicate_testing{}(GetParam()), "NO solution found!");
+    }
+    INSTANTIATE_TEST_CATEGORIES(rocroller_predicate_test);
+#endif
 
 } // namespace

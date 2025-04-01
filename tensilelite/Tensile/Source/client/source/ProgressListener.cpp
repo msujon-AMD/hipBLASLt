@@ -31,7 +31,7 @@
 
 #include <sys/time.h>
 
-namespace Tensile
+namespace TensileLite
 {
     namespace Client
     {
@@ -80,11 +80,14 @@ namespace Tensile
             if(problem.useBias())
             {
                 m_reporter->report(ResultKey::BiasType, ToString(problem.getParams().biasEnum()));
-                m_reporter->report(ResultKey::BiasDim, problem.getParams().biasDim());
             }
             else
             {
                 m_reporter->report(ResultKey::BiasType, "None");
+            }
+            if(problem.useScaleAlphaVec() || problem.useBias())
+            {
+                m_reporter->report(ResultKey::FactorDim, problem.getParams().factorDim());
             }
             m_reporter->report(ResultKey::ActivationType,
                                ToString(problem.getParams().activationEnum()));
@@ -135,7 +138,11 @@ namespace Tensile
 
         void ProgressListener::preWarmup() {}
 
-        void ProgressListener::postWarmup() {}
+        void ProgressListener::postWarmup(TimingEvents const& startEvents,
+                                          TimingEvents const& stopEvents,
+                                          hipStream_t const&  stream)
+        {
+        }
 
         void ProgressListener::validateWarmups(std::shared_ptr<ProblemInputs> inputs,
                                                TimingEvents const&            startEvents,
@@ -197,4 +204,4 @@ namespace Tensile
         }
 
     } // namespace Client
-} // namespace Tensile
+} // namespace TensileLite
